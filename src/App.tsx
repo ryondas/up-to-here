@@ -18,6 +18,14 @@ const MOODS = [
   { label: "Comfort comedy", show: "The Office" },
   { label: "Post-apocalyptic", show: "The Last of Us" },
 ];
+const TRENDING_CHARACTERS = [
+  { name: "Walter White", show: "Breaking Bad" },
+  { name: "Carmy Berzatto", show: "The Bear" },
+  { name: "Mark Scout", show: "Severance" },
+  { name: "Ellie Williams", show: "The Last of Us" },
+  { name: "Kendall Roy", show: "Succession" },
+  { name: "Michael Scott", show: "The Office" },
+];
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -181,6 +189,18 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
             return show && <button key={mood.label} className="mood" onClick={() => { void pick(show); }}>
               {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
               <span><b>{mood.label}</b><small>{show.name}</small></span>
+            </button>;
+          })}
+        </div>
+      </section>}
+      {!hits.length && suggestions.length > 0 && <section className="suggested" aria-labelledby="characters-title">
+        <h2 id="characters-title">Trending characters</h2>
+        <div className="character-rail">
+          {TRENDING_CHARACTERS.map((character) => {
+            const show = suggestions.find((candidate) => candidate.name.toLocaleLowerCase() === character.show.toLocaleLowerCase());
+            return show && <button key={character.name} className="character" onClick={() => { void pick(show); }}>
+              {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
+              <span><b>{character.name}</b><small>{show.name}</small></span>
             </button>;
           })}
         </div>
