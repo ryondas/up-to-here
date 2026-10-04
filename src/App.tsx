@@ -8,6 +8,7 @@ import {
   clearCredentials, clearShowData, exportData, getChat, getLibrary, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveLibraryEntry, saveProgress, saveRecentShow,
   type Credentials, type LibraryEntry, type StoredChatMessage,
 } from "./lib/storage";
+import { createProfile, deleteProfile, getActiveProfileId, listProfiles, renameProfile, setActiveProfile, type Profile } from "./lib/profiles";
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
 
@@ -59,8 +60,11 @@ export default function App() {
   const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
   const [storageNotice, setStorageNotice] = useState("");
   const [usage, setUsage] = useState({ agentIn: 0, agentOut: 0, guardIn: 0, guardOut: 0 });
-  const [view, setView] = useState<"main" | "apiKey">("main");
+  const [view, setView] = useState<"main" | "apiKey" | "profiles">("main");
   const [pendingQuestion, setPendingQuestion] = useState("");
+  const [profiles] = useState<Profile[]>(() => listProfiles());
+  const activeProfileId = useMemo(() => getActiveProfileId(), []);
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
   const importRef = useRef<HTMLInputElement | null>(null);
   const addUsage = (u: TurnUsage) => setUsage((prev) => ({
     agentIn: prev.agentIn + u.agent.input, agentOut: prev.agentOut + u.agent.output,
@@ -78,24 +82,28 @@ export default function App() {
   }, [catalog, position]);
 
   if (!storageReady) return <main className="narrow"><p className="status">Loading saved data…</p></main>;
-  if (!client) return <KeyScreen initialProvider={credentials?.provider ?? "anthropic"} onSave={async (nextProvider, key, remember) => {
-    const next = { provider: nextProvider, apiKey: key };
-    if (remember) await saveCredentials(next).catch(() => undefined);
-    else await clearCredentials().catch(() => undefined);
-    setCredentials(next);
-  }} />;
+  if (view === "profiles") return <ProfilesTab profiles={profiles} activeProfileId={activeProfileId} onBack={() => setView("main")} />;
+  if (!client) return <KeyScreen initialProvider={credentials?.provider ?? "anthropic"} profileName={activeProfile.name}
+    onSwitchProfile={() => setView("profiles")}
+    onSave={async (nextProvider, key, remember) => {
+      const next = { provider: nextProvider, apiKey: key };
+      if (remember) await saveCredentials(next).catch(() => undefined);
+      else await clearCredentials().catch(() => undefined);
+      setCredentials(next);
+    }} />;
   return (
     <main>
       <header className="top">
         <h1>Up to here</h1>
         <div className="header-actions">
-          <button className="link" onClick={() => { void exportData().then((backup) => {
+          <button className="link" onClick={() => setView("profiles")} title="Switch or manage profiles">{activeProfile.name}</button>
+          <button className="link" title="Only this profile's data" onClick={() => { void exportData().then((backup) => {
             const href = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
             const download = document.createElement("a");
-            download.href = href; download.download = "up-to-here-backup.json"; download.click(); URL.revokeObjectURL(href);
-            setStorageNotice("Data exported.");
+            download.href = href; download.download = `up-to-here-${activeProfile.name.toLowerCase().replace(/\s+/g, "-")}-backup.json`; download.click(); URL.revokeObjectURL(href);
+            setStorageNotice("Data exported for this profile.");
           }).catch(() => setStorageNotice("Couldn’t export your local data.")); }}>Export data</button>
-          <button className="link" onClick={() => importRef.current?.click()}>Import data</button>
+          <button className="link" title="Only replaces this profile's data — other profiles are untouched" onClick={() => importRef.current?.click()}>Import data</button>
           <input ref={importRef} className="visually-hidden" type="file" accept="application/json" onChange={(event) => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = "";
@@ -179,7 +187,76 @@ function ApiKeyTab({ provider, apiKey, usage, onChangeKey }: {
   );
 }
 
-function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onSave: (provider: Provider, key: string, remember: boolean) => Promise<void> }) {
+function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[]; activeProfileId: string; onBack: () => void }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [err, setErr] = useState("");
+
+  const switchTo = (id: string) => {
+    if (id === activeProfileId) return;
+    setActiveProfile(id);
+    window.location.reload();
+  };
+  const add = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setActiveProfile(createProfile(trimmed).id);
+    window.location.reload();
+  };
+  const remove = async (id: string, label: string) => {
+    if (!window.confirm(`Delete the profile "${label}" and everything saved under it? This can't be undone.`)) return;
+    try { await deleteProfile(id); window.location.reload(); }
+    catch (e) { setErr((e as Error).message); }
+  };
+  const saveRename = (id: string) => {
+    renameProfile(id, renameValue.trim() || profiles.find((p) => p.id === id)!.name);
+    setRenamingId(null);
+  };
+
+  return (
+    <main className="narrow">
+      <h1>Who's this?</h1>
+      <p className="lede">Each profile keeps its own progress, chat history, and API key. Switching — or importing a backup — never touches another profile's data.</p>
+      <div className="profile-grid">
+        {profiles.map((p) => (
+          <div key={p.id} className={`profile-card ${p.id === activeProfileId ? "active" : ""}`}>
+            <button className="profile-avatar" onClick={() => switchTo(p.id)} aria-label={`Switch to ${p.name}`}>{p.name.slice(0, 1).toUpperCase()}</button>
+            {renamingId === p.id ? (
+              <div className="row">
+                <input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveRename(p.id)} autoFocus aria-label="Profile name" />
+                <button className="link" onClick={() => saveRename(p.id)}>Save</button>
+              </div>
+            ) : (
+              <>
+                <b>{p.name}</b>
+                {p.id === activeProfileId && <small className="hint">Current</small>}
+                <div className="profile-actions">
+                  <button className="link" onClick={() => { setRenamingId(p.id); setRenameValue(p.name); }}>Rename</button>
+                  {profiles.length > 1 && <button className="link" onClick={() => { void remove(p.id, p.name); }}>Delete</button>}
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      {adding ? (
+        <div className="row">
+          <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Profile name" autoFocus />
+          <button className="primary" onClick={add}>Add</button>
+        </div>
+      ) : <button className="link" onClick={() => setAdding(true)}>+ Add profile</button>}
+      {err && <p className="status">{err}</p>}
+      <button className="link" onClick={onBack}>← Back</button>
+    </main>
+  );
+}
+
+function KeyScreen({ initialProvider, profileName, onSwitchProfile, onSave }: {
+  initialProvider: Provider; profileName: string; onSwitchProfile: () => void;
+  onSave: (provider: Provider, key: string, remember: boolean) => Promise<void>;
+}) {
   const [k, setK] = useState("");
   const [provider, setProvider] = useState<Provider>(initialProvider);
   const [remember, setRemember] = useState(true);
@@ -187,6 +264,7 @@ function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onS
     <main className="narrow">
       <h1>Up to here</h1>
       <p className="lede">Ask questions about a show without spoilers. It only reads summaries of episodes you've already watched.</p>
+      <p className="hint">Setting up <b>{profileName}</b>. <button className="link" onClick={onSwitchProfile}>Not you?</button></p>
       <label className="field" htmlFor="provider">AI provider</label>
       <select id="provider" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
         <option value="anthropic">Anthropic (Claude)</option>

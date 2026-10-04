@@ -11,7 +11,6 @@ export interface StoredChatMessage {
 }
 export interface LibraryEntry { show: ShowHit; position: StoredPosition; updatedAt: string; }
 
-const DB_NAME = "up-to-here";
 const DB_VERSION = 4;
 const LEGACY_KEY = "uth-api-key";
 const LEGACY_PROVIDER = "uth-api-provider";
@@ -24,12 +23,14 @@ function request<T>(value: IDBRequest<T>) {
 }
 
 // Opened lazily (not at module load) so importing this module is safe in non-browser
-// contexts, e.g. the Node test suite, where `indexedDB` doesn't exist.
+// contexts, e.g. the Node test suite, where `indexedDB` doesn't exist. Keyed to the
+// active profile at the time of first use — switching profiles reloads the page
+// (see src/lib/profiles.ts), so this never needs to swap databases mid-session.
 let dbPromise: Promise<IDBDatabase> | null = null;
 function openDb(): Promise<IDBDatabase> {
   if (!dbPromise) {
     dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-      const open = indexedDB.open(DB_NAME, DB_VERSION);
+      const open = indexedDB.open(dbNameForProfile(getActiveProfileId()), DB_VERSION);
       open.onupgradeneeded = () => {
         const database = open.result;
         if (!database.objectStoreNames.contains("settings")) database.createObjectStore("settings");
@@ -216,3 +217,4 @@ export const saveCastCache = (showId: number, cast: CastMember[]) =>
 
 import type { CastMember, ShowHit, TrendingShow, TvEpisode } from "./tvmaze";
 import type { SeasonSource } from "./wikipedia";
+import { dbNameForProfile, getActiveProfileId } from "./profiles";
