@@ -119,6 +119,8 @@ npm run build    # static site in dist/
 
 Deploy `dist/` anywhere static: Vercel, Netlify, Cloudflare Pages, GitHub Pages. There's nothing to configure server-side — the app is just files.
 
+Link previews need an absolute `og:image` URL, built from `VITE_SITE_URL` in `.env` (`https://up-to-here.vercel.app`). If you deploy somewhere else, change it there or set a `VITE_SITE_URL` build variable on your host.
+
 ## Known limitations
 
 - **Wikipedia/Fandom page matching is heuristic.** It tries a few title patterns, then a search, then falls back. Shows with disambiguated titles (e.g. *The Office (American TV series)*) may miss — use the "Wrong page? / Missing summaries?" link under a show's chat to point it at the right page manually.
