@@ -8,7 +8,7 @@ import {
   clearCredentials, clearShowData, exportData, getChat, getLibrary, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveLibraryEntry, saveProgress, saveRecentShow,
   type Credentials, type LibraryEntry, type StoredChatMessage,
 } from "./lib/storage";
-import { createProfile, deleteProfile, getActiveProfileId, listProfiles, renameProfile, setActiveProfile, type Profile } from "./lib/profiles";
+import { createProfile, deleteProfile, getActiveProfileId, listProfiles, setActiveProfile, type Profile } from "./lib/profiles";
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
 
@@ -190,8 +190,6 @@ function ApiKeyTab({ provider, apiKey, usage, onChangeKey }: {
 function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[]; activeProfileId: string; onBack: () => void }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
   const [err, setErr] = useState("");
 
   const switchTo = (id: string) => {
@@ -210,10 +208,6 @@ function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[
     try { await deleteProfile(id); window.location.reload(); }
     catch (e) { setErr((e as Error).message); }
   };
-  const saveRename = (id: string) => {
-    renameProfile(id, renameValue.trim() || profiles.find((p) => p.id === id)!.name);
-    setRenamingId(null);
-  };
 
   return (
     <main className="narrow">
@@ -223,21 +217,11 @@ function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[
         {profiles.map((p) => (
           <div key={p.id} className={`profile-card ${p.id === activeProfileId ? "active" : ""}`}>
             <button className="profile-avatar" onClick={() => switchTo(p.id)} aria-label={`Switch to ${p.name}`}>{p.name.slice(0, 1).toUpperCase()}</button>
-            {renamingId === p.id ? (
-              <div className="row">
-                <input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveRename(p.id)} autoFocus aria-label="Profile name" />
-                <button className="link" onClick={() => saveRename(p.id)}>Save</button>
-              </div>
-            ) : (
-              <>
-                <b>{p.name}</b>
-                {p.id === activeProfileId && <small className="hint">Current</small>}
-                <div className="profile-actions">
-                  <button className="link" onClick={() => { setRenamingId(p.id); setRenameValue(p.name); }}>Rename</button>
-                  {profiles.length > 1 && <button className="link" onClick={() => { void remove(p.id, p.name); }}>Delete</button>}
-                </div>
-              </>
-            )}
+            <b>{p.name}</b>
+            {p.id === activeProfileId && <small className="hint">Current</small>}
+            {profiles.length > 1 && <div className="profile-actions">
+              <button className="link" onClick={() => { void remove(p.id, p.name); }}>Delete</button>
+            </div>}
           </div>
         ))}
       </div>
@@ -248,7 +232,7 @@ function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[
         </div>
       ) : <button className="link" onClick={() => setAdding(true)}>+ Add profile</button>}
       {err && <p className="status">{err}</p>}
-      <button className="link" onClick={onBack}>← Back</button>
+      <button className="link profiles-back" onClick={onBack}>← Back</button>
     </main>
   );
 }

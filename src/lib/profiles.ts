@@ -42,10 +42,6 @@ export function createProfile(name: string): Profile {
   return profile;
 }
 
-export function renameProfile(id: string, name: string) {
-  writeProfiles(readProfiles().map((p) => (p.id === id ? { ...p, name } : p)));
-}
-
 export async function deleteProfile(id: string): Promise<void> {
   const profiles = readProfiles();
   if (profiles.length <= 1) throw new Error("You can't delete your only profile.");
