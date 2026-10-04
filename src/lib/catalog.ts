@@ -32,6 +32,10 @@ export class ShowCatalog {
 
   get seasons(): number[] { return [...new Set(this.skeleton.map((e) => e.season))].sort((a, b) => a - b); }
   episodeCount(season: number) { return this.skeleton.filter((e) => e.season === season).length; }
+  /** Episode artwork is shown in the picker without exposing future episode titles or summaries. */
+  episodeThumbnails(season: number) {
+    return new Map(this.skeleton.filter((e) => e.season === season).map((e) => [e.number, e.image]));
+  }
 
   /** Titles are only exposed for episodes the viewer has seen — future titles can spoil. */
   seenSkeleton(p: Position) { return this.skeleton.filter((e) => isSeen(e, p)); }

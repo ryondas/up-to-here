@@ -109,7 +109,7 @@ function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog;
   const count = catalog.episodeCount(position.season);
   const seenEpisodes = catalog.seenSkeleton(position);
   const seenTitle = seenEpisodes.find((e) => e.season === position.season && e.number === position.episode)?.title;
-  const thumbnails = new Map(seenEpisodes.filter((e) => e.season === position.season).map((e) => [e.number, e.image]));
+  const thumbnails = catalog.episodeThumbnails(position.season);
   return (
     <section className="picker">
       <div className="track-head">
@@ -128,7 +128,7 @@ function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog;
             <button key={n} className={`ep ${seen ? "seen" : "future"} ${n === position.episode ? "current" : ""}`}
               aria-pressed={n === position.episode} aria-label={seen ? `Episode ${n}` : `Episode ${n}, not watched yet`}
               onClick={() => onChange({ season: position.season, episode: n })}>
-              {seen && thumbnail && <img src={thumbnail} alt="" />}
+              {thumbnail && <img src={thumbnail} alt="" />}
               <span>{n}</span>
             </button>
           );
