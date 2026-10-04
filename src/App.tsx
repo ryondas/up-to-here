@@ -1,0 +1,185 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import type Anthropic from "@anthropic-ai/sdk";
+import { searchShows, type ShowHit } from "./lib/tvmaze";
+import { ShowCatalog, type Position } from "./lib/catalog";
+import { ask, makeClient, type Turn } from "./agent/agent";
+
+interface ChatMsg extends Turn { safe?: boolean; revealed?: boolean; sources?: string[]; }
+const KEY_STORE = "uth-api-key";
+
+export default function App() {
+  const [apiKey, setApiKey] = useState<string>(() => { try { return localStorage.getItem(KEY_STORE) ?? ""; } catch { return ""; } });
+  const client = useMemo<Anthropic | null>(() => (apiKey ? makeClient(apiKey) : null), [apiKey]);
+
+  const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
+  const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
+
+  if (!client) return <KeyScreen onSave={setApiKey} />;
+  return (
+    <main>
+      <header className="top">
+        <h1>Up to here</h1>
+        <button className="link" onClick={() => { try { localStorage.removeItem(KEY_STORE); } catch {} setApiKey(""); }}>Change API key</button>
+      </header>
+      {!catalog ? (
+        <ShowSearch onPick={async (hit) => {
+          const c = await new ShowCatalog(hit.id, hit.name).load();
+          setPosition({ season: c.seasons[0] ?? 1, episode: 1 });
+          setCatalog(c);
+        }} />
+      ) : (
+        <>
+          <div className="show-row">
+            <h2>{catalog.showName}</h2>
+            <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
+          </div>
+          <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
+          <Chat key={catalog.showId} client={client} catalog={catalog} position={position} />
+        </>
+      )}
+    </main>
+  );
+}
+
+function KeyScreen({ onSave }: { onSave: (k: string) => void }) {
+  const [k, setK] = useState("");
+  const [remember, setRemember] = useState(true);
+  return (
+    <main className="narrow">
+      <h1>Up to here</h1>
+      <p className="lede">Ask questions about a show without spoilers. It only reads summaries of episodes you've already watched.</p>
+      <label className="field" htmlFor="key">Your Anthropic API key</label>
+      <input id="key" type="password" value={k} onChange={(e) => setK(e.target.value)} placeholder="sk-ant-…" autoComplete="off" />
+      <label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember on this device</label>
+      <p className="hint">Your key stays in this browser and is sent only to Anthropic. Questions are billed to your API account. Get a key at console.anthropic.com.</p>
+      <button className="primary" disabled={!k.startsWith("sk-")} onClick={() => {
+        if (remember) { try { localStorage.setItem(KEY_STORE, k.trim()); } catch {} }
+        onSave(k.trim());
+      }}>Continue</button>
+    </main>
+  );
+}
+
+function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<ShowHit[]>([]);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const go = async () => {
+    if (!q.trim()) return;
+    setBusy("Searching…"); setErr("");
+    try { setHits(await searchShows(q)); } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
+  };
+  return (
+    <section>
+      <label className="field" htmlFor="sq">What are you watching?</label>
+      <div className="row">
+        <input id="sq" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Show name" />
+        <button className="primary" onClick={go}>Search</button>
+      </div>
+      <p className="status">{busy || err}</p>
+      <ul className="hits">
+        {hits.map((h) => (
+          <li key={h.id}>
+            <button onClick={async () => { setBusy(`Loading ${h.name}…`); try { await onPick(h); } catch (e) { setErr((e as Error).message); setBusy(""); } }}>
+              {h.image ? <img src={h.image} alt="" /> : <span className="noimg" />}
+              <span><b>{h.name}</b><small>{[h.premiered?.slice(0, 4), h.network].filter(Boolean).join(", ")}</small></span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog; position: Position; onChange: (p: Position) => void }) {
+  const count = catalog.episodeCount(position.season);
+  const seenTitle = catalog.seenSkeleton(position).find((e) => e.season === position.season && e.number === position.episode)?.title;
+  return (
+    <section className="picker">
+      <div className="track-head">
+        <label>Season{" "}
+          <select value={position.season} onChange={(e) => onChange({ season: Number(e.target.value), episode: 1 })}>
+            {catalog.seasons.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <span>Tap the last episode you finished</span>
+      </div>
+      <div className="track" role="group" aria-label="Episodes">
+        {Array.from({ length: count }, (_, i) => i + 1).map((n) => {
+          const seen = n <= position.episode;
+          return (
+            <button key={n} className={`ep ${seen ? "seen" : "future"} ${n === position.episode ? "current" : ""}`}
+              aria-pressed={n === position.episode} aria-label={seen ? `Episode ${n}` : `Episode ${n}, not watched yet`}
+              onClick={() => onChange({ season: position.season, episode: n })}>{n}</button>
+          );
+        })}
+      </div>
+      <p className="ep-title">Watched through S{position.season}E{position.episode}{seenTitle ? `: ${seenTitle}` : ""}</p>
+    </section>
+  );
+}
+
+function Chat({ client, catalog, position }: { client: Anthropic; catalog: ShowCatalog; position: Position }) {
+  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const ctl = useRef<AbortController | null>(null);
+  const prev = useRef(position);
+
+  // Moving BACKWARD invalidates the chat: earlier answers may cover episodes now "unwatched".
+  useEffect(() => {
+    const p = prev.current;
+    if (position.season < p.season || (position.season === p.season && position.episode < p.episode)) setMsgs([]);
+    prev.current = position;
+  }, [position]);
+
+  const send = async () => {
+    const question = q.trim();
+    if (!question || status) return;
+    setQ("");
+    const history: Turn[] = msgs.filter((m) => m.safe !== false).map(({ role, content }) => ({ role, content }));
+    setMsgs((m) => [...m, { role: "user", content: question }]);
+    ctl.current = new AbortController();
+    try {
+      const r = await ask(client, catalog, position, history, question, setStatus, ctl.current.signal);
+      setMsgs((m) => [...m, { role: "assistant", content: r.text, safe: r.safe, sources: r.sources }]);
+    } catch (e) {
+      const msg = (e as Error).name === "AbortError" ? "Stopped." : `Something went wrong: ${(e as Error).message}`;
+      setMsgs((m) => [...m, { role: "assistant", content: msg, safe: true }]);
+    } finally { setStatus(""); }
+  };
+
+  return (
+    <section className="chat">
+      {msgs.map((m, i) => (
+        <div key={i} className={`msg ${m.role} ${m.safe === false && !m.revealed ? "flagged" : ""}`}>
+          {m.role === "assistant" && m.safe === false && !m.revealed ? (
+            <div className="flag-msg">
+              The spoiler check thinks this answer may hint at something past where you are, so it's hidden.
+              <button onClick={() => setMsgs((all) => all.map((x, j) => (j === i ? { ...x, revealed: true } : x)))}>Show it anyway</button>
+            </div>
+          ) : <p>{m.content}</p>}
+          {m.sources && m.sources.length > 0 && (!m.safe ? m.revealed : true) && <small className="src">From {m.sources.join(", ")}</small>}
+        </div>
+      ))}
+      {status && <p className="status">{status} <button className="link" onClick={() => ctl.current?.abort()}>Stop</button></p>}
+      <div className="row ask">
+        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" />
+        <button className="primary" onClick={send} disabled={!!status}>Ask</button>
+      </div>
+      <Attribution catalog={catalog} />
+    </section>
+  );
+}
+
+function Attribution({ catalog }: { catalog: ShowCatalog }) {
+  const pages = [...catalog.sources.values()];
+  return (
+    <p className="attrib">
+      Episode data from <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a>
+      {pages.length > 0 && <> and Wikipedia ({pages.map((p, i) => <span key={p.url}>{i > 0 && ", "}<a href={p.url} target="_blank" rel="noreferrer">{p.pageTitle}</a></span>)}), CC BY-SA 4.0</>}.
+    </p>
+  );
+}
