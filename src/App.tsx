@@ -3,7 +3,7 @@ import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
 import {
-  clearCredentials, getChat, getProgress, getRecentSearches, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentSearch,
+  clearCredentials, getChat, getProgress, getRecentShows, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
   type Credentials, type StoredChatMessage,
 } from "./lib/storage";
 
@@ -91,8 +91,8 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
-  const [recent, setRecent] = useState<string[]>([]);
-  useEffect(() => { getRecentSearches().then(setRecent).catch(() => undefined); }, []);
+  const [recent, setRecent] = useState<ShowHit[]>([]);
+  useEffect(() => { getRecentShows().then(setRecent).catch(() => undefined); }, []);
   useEffect(() => {
     let active = true;
     getSuggestedShows().then((shows) => { if (active) setSuggestions(shows); }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
@@ -102,9 +102,17 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
     if (!query.trim()) return;
     setBusy("Searching…"); setErr("");
     try {
-      setHits(await searchShows(query));
-      setRecent(await saveRecentSearch(query));
+      const results = await searchShows(query);
+      setHits(results);
+      if (results[0]) setRecent(await saveRecentShow(results[0]));
     } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
+  };
+  const pick = async (show: ShowHit) => {
+    setBusy(`Loading ${show.name}…`);
+    try {
+      setRecent(await saveRecentShow(show));
+      await onPick(show);
+    } catch (e) { setErr((e as Error).message); setBusy(""); }
   };
   return (
     <section>
@@ -114,23 +122,28 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
         <button className="primary" onClick={() => { void go(); }}>Search</button>
       </div>
       <p className="status">{busy || err}</p>
-      {recent.length > 0 && <div className="recent"><span>Recent</span>{recent.map((query) => <button key={query} className="link" onClick={() => { setQ(query); void go(query); }}>{query}</button>)}</div>}
       {!hits.length && <section className="suggested" aria-labelledby="suggested-title">
         <h2 id="suggested-title">Suggested shows</h2>
         {loadingSuggestions ? <p className="status">Finding something good…</p> : <div className="suggestion-rail">
-          {suggestions.map((show) => <button key={show.id} className="suggestion" onClick={async () => {
-            setBusy(`Loading ${show.name}…`);
-            try { await onPick(show); } catch (e) { setErr((e as Error).message); setBusy(""); }
-          }}>
+          {suggestions.map((show) => <button key={show.id} className="suggestion" onClick={() => { void pick(show); }}>
             {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
             <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
           </button>)}
         </div>}
       </section>}
+      {!hits.length && recent.length > 0 && <section className="suggested" aria-labelledby="recent-title">
+        <h2 id="recent-title">Recent searches</h2>
+        <div className="suggestion-rail">
+          {recent.map((show) => <button key={show.id} className="suggestion" onClick={() => { void pick(show); }}>
+            {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
+            <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
+          </button>)}
+        </div>
+      </section>}
       <ul className="hits">
         {hits.map((h) => (
           <li key={h.id}>
-            <button onClick={async () => { setBusy(`Loading ${h.name}…`); try { await onPick(h); } catch (e) { setErr((e as Error).message); setBusy(""); } }}>
+            <button onClick={() => { void pick(h); }}>
               {h.image ? <img src={h.image} alt="" /> : <span className="noimg" />}
               <span><b>{h.name}</b><small>{[h.premiered?.slice(0, 4), h.network].filter(Boolean).join(", ")}</small></span>
             </button>

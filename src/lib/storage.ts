@@ -83,12 +83,11 @@ export const getChat = (showId: number, position: StoredPosition) => get<StoredC
 export const saveChat = (showId: number, position: StoredPosition, messages: StoredChatMessage[]) =>
   put("chats", messages, chatKey(showId, position));
 
-export const getRecentSearches = () => get<string[]>("recentSearches", "queries").then((queries) => queries ?? []);
-export async function saveRecentSearch(query: string) {
-  const normalized = query.trim();
-  if (!normalized) return getRecentSearches();
-  const queries = await getRecentSearches();
-  const next = [normalized, ...queries.filter((q) => q.toLocaleLowerCase() !== normalized.toLocaleLowerCase())].slice(0, 6);
-  await put("recentSearches", next, "queries");
+export const getRecentShows = () => get<ShowHit[]>("recentSearches", "shows").then((shows) => Array.isArray(shows) ? shows : []);
+export async function saveRecentShow(show: ShowHit) {
+  const shows = await getRecentShows();
+  const next = [show, ...shows.filter((saved) => saved.id !== show.id)].slice(0, 6);
+  await put("recentSearches", next, "shows");
   return next;
 }
+import type { ShowHit } from "./tvmaze";

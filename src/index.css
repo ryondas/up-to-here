@@ -30,8 +30,6 @@ select{width:auto;padding:.3rem .5rem}
 .hits button{display:flex;gap:.8rem;align-items:center;width:100%;text-align:left;background:var(--surface);border:1.5px solid var(--line);border-radius:10px;padding:.5rem;cursor:pointer;color:var(--ink);font:inherit}
 .hits img,.hits .noimg{width:42px;height:59px;object-fit:cover;border-radius:4px;background:var(--line);flex:none}
 .hits small{display:block;color:var(--muted)}
-.recent{display:flex;flex-wrap:wrap;gap:.45rem .75rem;align-items:center;margin:.5rem 0 1rem;color:var(--muted);font-size:.9rem}
-.recent .link{font-size:inherit}
 .suggested{margin-top:1.5rem}
 .suggested h2{font-size:1.1rem;margin:0 0 .7rem}
 .suggestion-rail{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
