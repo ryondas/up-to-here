@@ -21,7 +21,9 @@ export function makeClient(provider: Provider, apiKey: string): AgentClient {
 }
 
 export interface Turn { role: "user" | "assistant"; content: string; }
-export interface AgentResult { text: string; safe: boolean; sources: string[]; }
+export interface Usage { input: number; output: number; }
+export interface TurnUsage { agent: Usage; guard: Usage; }
+export interface AgentResult { text: string; safe: boolean; sources: string[]; usage: TurnUsage; }
 
 function systemPrompt(showName: string, p: Position, current?: { title: string; summary: string }) {
   return `You are a spoiler-safe companion for the TV show "${showName}". The viewer has watched up to and including season ${p.season}, episode ${p.episode}${current ? ` ("${current.title}")` : ""}.
@@ -45,20 +47,22 @@ export async function ask(
   if (current) ctx.retrieved.set(`S${current.season}E${current.number}`, current);
 
   const prompt = systemPrompt(catalog.showName, position, current);
+  const agentUsage: Usage = { input: 0, output: 0 };
+  const guardUsage: Usage = { input: 0, output: 0 };
   let text: string;
-  if (client.provider === "anthropic") text = await askAnthropic(client.client, prompt, history, question, ctx, onStatus, signal);
-  else if (client.provider === "openai") text = await askOpenAI(client.client, prompt, history, question, ctx, onStatus, signal);
-  else text = await askGemini(client.apiKey, prompt, history, question, ctx, onStatus, signal);
+  if (client.provider === "anthropic") text = await askAnthropic(client.client, prompt, history, question, ctx, onStatus, signal, agentUsage);
+  else if (client.provider === "openai") text = await askOpenAI(client.client, prompt, history, question, ctx, onStatus, signal, agentUsage);
+  else text = await askGemini(client.apiKey, prompt, history, question, ctx, onStatus, signal, agentUsage);
   if (!text) text = "I couldn't put an answer together from the episodes you've seen. Try asking more specifically.";
 
   onStatus("Checking for spoilers…");
-  const safe = await checkForSpoilers(client, [...ctx.retrieved.values()], text, signal);
-  return { text, safe, sources: [...ctx.retrieved.keys()] };
+  const safe = await checkForSpoilers(client, [...ctx.retrieved.values()], text, signal, guardUsage);
+  return { text, safe, sources: [...ctx.retrieved.keys()], usage: { agent: agentUsage, guard: guardUsage } };
 }
 
 async function askAnthropic(
   client: Anthropic, system: string, history: Turn[], question: string, ctx: ToolContext,
-  onStatus: (s: string) => void, signal?: AbortSignal,
+  onStatus: (s: string) => void, signal: AbortSignal | undefined, usage: Usage,
 ): Promise<string> {
   const messages: Anthropic.MessageParam[] = [
     ...history.map((t) => ({ role: t.role, content: t.content })),
@@ -71,6 +75,7 @@ async function askAnthropic(
       { model: MODELS.anthropic.agent, max_tokens: 1024, system, tools: TOOLS, messages },
       { signal },
     );
+    usage.input += res.usage.input_tokens; usage.output += res.usage.output_tokens;
     messages.push({ role: "assistant", content: res.content });
     text = res.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
     if (res.stop_reason !== "tool_use") break;
@@ -88,7 +93,7 @@ async function askAnthropic(
 
 async function askOpenAI(
   client: OpenAI, system: string, history: Turn[], question: string, ctx: ToolContext,
-  onStatus: (s: string) => void, signal?: AbortSignal,
+  onStatus: (s: string) => void, signal: AbortSignal | undefined, usage: Usage,
 ): Promise<string> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: system },
@@ -108,6 +113,7 @@ async function askOpenAI(
       messages,
       tools,
     }, { signal });
+    usage.input += res.usage?.prompt_tokens ?? 0; usage.output += res.usage?.completion_tokens ?? 0;
     const message = res.choices[0]?.message;
     if (!message) throw new Error("OpenAI returned no completion.");
     messages.push(message);
@@ -129,11 +135,15 @@ async function askOpenAI(
 }
 
 type GeminiContent = { role: "user" | "model"; parts: Array<Record<string, unknown>> };
-type GeminiResponse = { candidates?: Array<{ content?: GeminiContent }> ; error?: { message?: string } };
+type GeminiResponse = {
+  candidates?: Array<{ content?: GeminiContent }>;
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  error?: { message?: string };
+};
 
 async function askGemini(
   apiKey: string, system: string, history: Turn[], question: string, ctx: ToolContext,
-  onStatus: (s: string) => void, signal?: AbortSignal,
+  onStatus: (s: string) => void, signal: AbortSignal | undefined, usage: Usage,
 ): Promise<string> {
   const contents: GeminiContent[] = [
     ...history.map((turn) => ({ role: turn.role === "assistant" ? "model" as const : "user" as const, parts: [{ text: turn.content }] })),
@@ -148,6 +158,7 @@ async function askGemini(
       tools,
       generationConfig: { maxOutputTokens: 1024 },
     }, signal);
+    usage.input += res.usageMetadata?.promptTokenCount ?? 0; usage.output += res.usageMetadata?.candidatesTokenCount ?? 0;
     const content = res.candidates?.[0]?.content;
     if (!content) throw new Error(res.error?.message || "Gemini returned no completion.");
     contents.push(content);
@@ -168,11 +179,12 @@ async function askGemini(
   return "";
 }
 
-export async function askGeminiText(apiKey: string, model: string, prompt: string, signal?: AbortSignal): Promise<string> {
+export async function askGeminiText(apiKey: string, model: string, prompt: string, signal?: AbortSignal, usage?: Usage): Promise<string> {
   const res = await callGemini(apiKey, model, {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: { maxOutputTokens: 50 },
   }, signal);
+  if (usage) { usage.input += res.usageMetadata?.promptTokenCount ?? 0; usage.output += res.usageMetadata?.candidatesTokenCount ?? 0; }
   return res.candidates?.[0]?.content?.parts.map((part) => typeof part.text === "string" ? part.text : "").join("") ?? "";
 }
 

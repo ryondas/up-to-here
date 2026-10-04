@@ -2,10 +2,10 @@
 // the episodes the agent actually read, and contains no foreshadowing.
 import type { Episode } from "../lib/catalog";
 import { MODELS } from "./config";
-import { askGeminiText, type AgentClient } from "./agent";
+import { askGeminiText, type AgentClient, type Usage } from "./agent";
 
 export async function checkForSpoilers(
-  client: AgentClient, retrieved: Episode[], answer: string, signal?: AbortSignal,
+  client: AgentClient, retrieved: Episode[], answer: string, signal?: AbortSignal, usage?: Usage,
 ): Promise<boolean> {
   const evidence = retrieved.map((e) => `[S${e.season}E${e.number} "${e.title}"]\n${e.summary}`).join("\n\n");
   const prompt = `A TV viewer has only seen the episodes summarized below. Decide if the ANSWER could spoil anything for them.
@@ -24,19 +24,23 @@ Reply with exactly one word: SAFE or UNSAFE.`;
   try {
     let out: string;
     if (client.provider === "anthropic") {
-      out = (await client.client.messages.create({
+      const res = await client.client.messages.create({
         model: MODELS.anthropic.guard,
         max_tokens: 50,
         messages: [{ role: "user", content: prompt }],
-      }, { signal })).content.map((b) => (b.type === "text" ? b.text : "")).join("");
+      }, { signal });
+      if (usage) { usage.input += res.usage.input_tokens; usage.output += res.usage.output_tokens; }
+      out = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     } else if (client.provider === "openai") {
-      out = (await client.client.chat.completions.create({
+      const res = await client.client.chat.completions.create({
         model: MODELS.openai.guard,
         max_completion_tokens: 50,
         messages: [{ role: "user", content: prompt }],
-      }, { signal })).choices[0]?.message.content ?? "";
+      }, { signal });
+      if (usage) { usage.input += res.usage?.prompt_tokens ?? 0; usage.output += res.usage?.completion_tokens ?? 0; }
+      out = res.choices[0]?.message.content ?? "";
     } else {
-      out = await askGeminiText(client.apiKey, MODELS.gemini.guard, prompt, signal);
+      out = await askGeminiText(client.apiKey, MODELS.gemini.guard, prompt, signal, usage);
     }
     return out.includes("SAFE") && !out.includes("UNSAFE");
   } catch (e) {

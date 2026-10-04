@@ -16,3 +16,14 @@ export const MODELS: Record<Provider, { agent: string; guard: string }> = {
     guard: "gemini-3.1-flash-lite",
   },
 };
+
+/**
+ * Rough USD-per-1M-token list prices, for the session cost estimate shown in the UI.
+ * Approximate and may drift from the provider's current pricing page — treat it as
+ * a ballpark, not a bill. Update alongside MODELS if you swap a model above.
+ */
+export const PRICING: Record<Provider, { agent: { input: number; output: number }; guard: { input: number; output: number } }> = {
+  anthropic: { agent: { input: 3, output: 15 }, guard: { input: 0.8, output: 4 } },
+  openai: { agent: { input: 2, output: 8 }, guard: { input: 0.4, output: 1.6 } },
+  gemini: { agent: { input: 0, output: 0 }, guard: { input: 0, output: 0 } },
+};
