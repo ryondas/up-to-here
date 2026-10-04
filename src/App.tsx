@@ -2,35 +2,49 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
+import {
+  clearCredentials, getChat, getProgress, getRecentSearches, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentSearch,
+  type Credentials, type StoredChatMessage,
+} from "./lib/storage";
 
-interface ChatMsg extends Turn { safe?: boolean; revealed?: boolean; sources?: string[]; }
-const KEY_STORE = "uth-api-key";
-const PROVIDER_STORE = "uth-api-provider";
+interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState<string>(() => { try { return localStorage.getItem(KEY_STORE) ?? ""; } catch { return ""; } });
-  const [provider, setProvider] = useState<Provider>(() => {
-    try {
-      const saved = localStorage.getItem(PROVIDER_STORE);
-      return saved === "openai" || saved === "gemini" ? saved : "anthropic";
-    } catch { return "anthropic"; }
-  });
-  const client = useMemo<AgentClient | null>(() => (apiKey ? makeClient(provider, apiKey) : null), [provider, apiKey]);
+  const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [storageReady, setStorageReady] = useState(false);
+  const client = useMemo<AgentClient | null>(() => credentials?.apiKey ? makeClient(credentials.provider, credentials.apiKey) : null, [credentials]);
 
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
   const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
 
-  if (!client) return <KeyScreen initialProvider={provider} onSave={(nextProvider, key) => { setProvider(nextProvider); setApiKey(key); }} />;
+  useEffect(() => {
+    loadCredentials().then(setCredentials).catch(() => undefined).finally(() => setStorageReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (catalog) void saveProgress(catalog.showId, position).catch(() => undefined);
+  }, [catalog, position]);
+
+  if (!storageReady) return <main className="narrow"><p className="status">Loading saved data…</p></main>;
+  if (!client) return <KeyScreen initialProvider={credentials?.provider ?? "anthropic"} onSave={async (nextProvider, key, remember) => {
+    const next = { provider: nextProvider, apiKey: key };
+    if (remember) await saveCredentials(next).catch(() => undefined);
+    else await clearCredentials().catch(() => undefined);
+    setCredentials(next);
+  }} />;
   return (
     <main>
       <header className="top">
         <h1>Up to here</h1>
-        <button className="link" onClick={() => { try { localStorage.removeItem(KEY_STORE); localStorage.removeItem(PROVIDER_STORE); } catch {} setApiKey(""); }}>Change API key</button>
+        <button className="link" onClick={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }}>Change API key</button>
       </header>
       {!catalog ? (
         <ShowSearch onPick={async (hit) => {
           const c = await new ShowCatalog(hit.id, hit.name).load();
-          setPosition({ season: c.seasons[0] ?? 1, episode: 1 });
+          const saved = await getProgress(c.showId).catch(() => undefined);
+          const season = saved && c.seasons.includes(saved.season) ? saved.season : c.seasons[0] ?? 1;
+          const episode = saved && saved.season === season && saved.episode <= c.episodeCount(season) ? saved.episode : 1;
+          setPosition({ season, episode });
           setCatalog(c);
         }} />
       ) : (
@@ -40,14 +54,14 @@ export default function App() {
             <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
           </div>
           <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
-          <Chat key={catalog.showId} client={client} catalog={catalog} position={position} />
+          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} />
         </>
       )}
     </main>
   );
 }
 
-function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onSave: (provider: Provider, key: string) => void }) {
+function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onSave: (provider: Provider, key: string, remember: boolean) => Promise<void> }) {
   const [k, setK] = useState("");
   const [provider, setProvider] = useState<Provider>(initialProvider);
   const [remember, setRemember] = useState(true);
@@ -65,10 +79,7 @@ function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onS
       <input id="key" type="password" value={k} onChange={(e) => setK(e.target.value)} placeholder={provider === "anthropic" ? "sk-ant-…" : provider === "openai" ? "sk-…" : "AIza…"} autoComplete="off" />
       <label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember on this device</label>
       <p className="hint">Your key stays in this browser and is sent only to {provider === "anthropic" ? "Anthropic" : provider === "openai" ? "OpenAI" : "Google"}. Questions are billed to your API account. Get a key at {provider === "anthropic" ? "console.anthropic.com" : provider === "openai" ? "platform.openai.com" : "aistudio.google.com"}.</p>
-      <button className="primary" disabled={!k.trim()} onClick={() => {
-        if (remember) { try { localStorage.setItem(KEY_STORE, k.trim()); localStorage.setItem(PROVIDER_STORE, provider); } catch {} }
-        onSave(provider, k.trim());
-      }}>Continue</button>
+      <button className="primary" disabled={!k.trim()} onClick={() => { void onSave(provider, k.trim(), remember); }}>Continue</button>
     </main>
   );
 }
@@ -78,19 +89,25 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
   const [hits, setHits] = useState<ShowHit[]>([]);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
-  const go = async () => {
-    if (!q.trim()) return;
+  const [recent, setRecent] = useState<string[]>([]);
+  useEffect(() => { getRecentSearches().then(setRecent).catch(() => undefined); }, []);
+  const go = async (query = q) => {
+    if (!query.trim()) return;
     setBusy("Searching…"); setErr("");
-    try { setHits(await searchShows(q)); } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
+    try {
+      setHits(await searchShows(query));
+      setRecent(await saveRecentSearch(query));
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
   };
   return (
     <section>
       <label className="field" htmlFor="sq">What are you watching?</label>
       <div className="row">
         <input id="sq" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Show name" />
-        <button className="primary" onClick={go}>Search</button>
+        <button className="primary" onClick={() => { void go(); }}>Search</button>
       </div>
       <p className="status">{busy || err}</p>
+      {recent.length > 0 && <div className="recent"><span>Recent</span>{recent.map((query) => <button key={query} className="link" onClick={() => { setQ(query); void go(query); }}>{query}</button>)}</div>}
       <ul className="hits">
         {hits.map((h) => (
           <li key={h.id}>
@@ -143,19 +160,24 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
+  const [historyReady, setHistoryReady] = useState(false);
   const ctl = useRef<AbortController | null>(null);
-  const prev = useRef(position);
 
-  // Moving BACKWARD invalidates the chat: earlier answers may cover episodes now "unwatched".
   useEffect(() => {
-    const p = prev.current;
-    if (position.season < p.season || (position.season === p.season && position.episode < p.episode)) setMsgs([]);
-    prev.current = position;
-  }, [position]);
+    let active = true;
+    getChat(catalog.showId, position).then((saved) => {
+      if (active && saved) setMsgs(saved as ChatMsg[]);
+    }).catch(() => undefined).finally(() => { if (active) setHistoryReady(true); });
+    return () => { active = false; };
+  }, [catalog.showId, position]);
+
+  useEffect(() => {
+    if (historyReady && msgs.length > 0) void saveChat(catalog.showId, position, msgs).catch(() => undefined);
+  }, [catalog.showId, historyReady, msgs, position]);
 
   const send = async () => {
     const question = q.trim();
-    if (!question || status) return;
+    if (!question || status || !historyReady) return;
     setQ("");
     const history: Turn[] = msgs.filter((m) => m.safe !== false).map(({ role, content }) => ({ role, content }));
     setMsgs((m) => [...m, { role: "user", content: question }]);
@@ -182,11 +204,11 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
           {m.sources && m.sources.length > 0 && (!m.safe ? m.revealed : true) && <small className="src">From {m.sources.join(", ")}</small>}
         </div>
       ))}
-      {status && <p className="status">{status} <button className="link" onClick={() => ctl.current?.abort()}>Stop</button></p>}
+      {(status || !historyReady) && <p className="status">{status || "Loading saved chat…"} {status && <button className="link" onClick={() => ctl.current?.abort()}>Stop</button>}</p>}
       <div className="row ask">
         <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" />
-        <button className="primary" onClick={send} disabled={!!status}>Ask</button>
+        <button className="primary" onClick={send} disabled={!!status || !historyReady}>Ask</button>
       </div>
       <Attribution catalog={catalog} />
     </section>

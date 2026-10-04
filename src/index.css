@@ -30,6 +30,8 @@ select{width:auto;padding:.3rem .5rem}
 .hits button{display:flex;gap:.8rem;align-items:center;width:100%;text-align:left;background:var(--surface);border:1.5px solid var(--line);border-radius:10px;padding:.5rem;cursor:pointer;color:var(--ink);font:inherit}
 .hits img,.hits .noimg{width:42px;height:59px;object-fit:cover;border-radius:4px;background:var(--line);flex:none}
 .hits small{display:block;color:var(--muted)}
+.recent{display:flex;flex-wrap:wrap;gap:.45rem .75rem;align-items:center;margin:.5rem 0 1rem;color:var(--muted);font-size:.9rem}
+.recent .link{font-size:inherit}
 .track-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:.6rem;color:var(--muted);font-size:.9rem}
 .track-head label{color:var(--ink);font-weight:600}
 .track{display:flex;gap:6px;overflow-x:auto;padding:4px 2px 10px}
