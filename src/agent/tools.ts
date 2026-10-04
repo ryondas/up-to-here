@@ -1,10 +1,19 @@
 // Tool definitions + executors. Every executor goes through ShowCatalog.getEpisode,
 // which refuses anything past the viewer's position. The spoiler wall lives here,
 // in code, not in the prompt.
-import type Anthropic from "@anthropic-ai/sdk";
 import { ShowCatalog, SpoilerGateError, type Episode, type Position } from "../lib/catalog";
 
-export const TOOLS: Anthropic.Tool[] = [
+export interface AgentTool {
+  name: string;
+  description: string;
+  input_schema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+export const TOOLS: AgentTool[] = [
   {
     name: "list_seen_episodes",
     description: "List every episode the viewer has watched (season, episode number, title). Use this to orient yourself or find which episode covers something.",

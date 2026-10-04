@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
+    "openai": "^6.49.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
