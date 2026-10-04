@@ -5,6 +5,8 @@ import type { Position } from "./catalog";
 
 export type Route =
   | { name: "search" }
+  | { name: "settings" }
+  | { name: "profiles" }
   | { name: "show"; showId: number; position?: Position };
 
 const positiveInt = (value: string | null | undefined) => {
@@ -15,6 +17,8 @@ const positiveInt = (value: string | null | undefined) => {
 /** Parses `#/show/123?s=2&e=4`; anything unrecognized falls back to search. */
 export function parseRoute(hash: string): Route {
   const [path, query = ""] = hash.replace(/^#/, "").split("?");
+  if (/^\/settings\/?$/.test(path)) return { name: "settings" };
+  if (/^\/profiles\/?$/.test(path)) return { name: "profiles" };
   const match = /^\/show\/([^/]+)\/?$/.exec(path);
   const showId = positiveInt(match?.[1]);
   if (!showId) return { name: "search" };
@@ -26,6 +30,8 @@ export function parseRoute(hash: string): Route {
 
 export function routeHash(route: Route): string {
   if (route.name === "search") return "#/";
+  if (route.name === "settings") return "#/settings";
+  if (route.name === "profiles") return "#/profiles";
   const position = route.position ? `?s=${route.position.season}&e=${route.position.episode}` : "";
   return `#/show/${route.showId}${position}`;
 }

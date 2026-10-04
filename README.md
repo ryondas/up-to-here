@@ -30,7 +30,7 @@ Fully static frontend (Vite + React + TypeScript). No backend, no server costs: 
 - **Bring your own key** — Anthropic, OpenAI, or Google Gemini. Billed to your own account; no key ever touches a server, because there isn't one.
 - **Plot summaries from Wikipedia, with a Fandom fallback** and a manual page-override when the title-matching heuristic guesses wrong.
 - **Resilient by default** — transient network/API failures retry with backoff; episode lists, season summaries, cast data, and trending shows all persist in IndexedDB so repeat visits don't re-fetch or re-parse.
-- **Session cost tracking** — a dedicated API Key tab shows your current provider/key and a running token/cost estimate for the session; every chat answer also shows its own token count.
+- **Session cost tracking** — the Settings page shows your current provider/key and a running token/cost estimate for the session; every chat answer also shows its own token count.
 - **Continue watching** — resume any show you've made progress on, sorted by recency, independent of search history.
 - **Dynamic discovery** — "Suggested shows" and mood-based browsing pull from what's actually trending on TVmaze (genre-matched where that maps cleanly; curated where it doesn't), plus a trending-characters rail that opens the chat with a question pre-filled.
 - **Full data portability** — export/import your entire local dataset as JSON, or export a single chat as a plain-text transcript to share.
@@ -97,9 +97,9 @@ Moving your position backward clears the chat, since earlier answers may cover e
 | `src/agent/agent.ts` | Tool-use loop, system prompt, per-call token tracking |
 | `src/agent/guard.ts` | Spoiler check |
 | `src/agent/config.ts` | Model choices + approximate pricing |
-| `src/lib/route.ts` | Hash routes (`#/`, `#/show/:id?s=&e=`) so Back, refresh and links work |
-| `src/App.tsx` | App shell: key gate, header, routes between search and a show |
-| `src/components/` | Key screen, profiles, show search/discovery, episode track, chat, API Key tab |
+| `src/lib/route.ts` | Hash routes (`#/`, `#/show/:id?s=&e=`, `#/settings`, `#/profiles`) so Back, refresh and links work |
+| `src/App.tsx` | App shell: key gate, routes between search, a show, settings and profiles |
+| `src/components/` | Header and breadcrumb, settings (data backup, API key, usage), key screen, profiles, show search/discovery, episode track, chat |
 
 ## Testing
 

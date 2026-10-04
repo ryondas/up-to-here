@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { createProfile, deleteProfile, setActiveProfile, type Profile } from "../lib/profiles";
 
+/** Reload into the new profile on the home screen, not back into this chooser. */
+const reloadHome = () => {
+  window.history.replaceState(window.history.state, "", "#/");
+  window.location.reload();
+};
+
 export function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: Profile[]; activeProfileId: string; onBack: () => void }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
@@ -9,13 +15,13 @@ export function ProfilesTab({ profiles, activeProfileId, onBack }: { profiles: P
   const switchTo = (id: string) => {
     if (id === activeProfileId) return;
     setActiveProfile(id);
-    window.location.reload();
+    reloadHome();
   };
   const add = () => {
     const trimmed = name.trim();
     if (!trimmed) return;
     setActiveProfile(createProfile(trimmed).id);
-    window.location.reload();
+    reloadHome();
   };
   const remove = async (id: string, label: string) => {
     if (!window.confirm(`Delete the profile "${label}" and everything saved under it? This can't be undone.`)) return;

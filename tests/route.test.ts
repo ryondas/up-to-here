@@ -5,6 +5,10 @@ import { parseRoute, routeHash } from "../src/lib/route";
 assert.deepEqual(parseRoute(""), { name: "search" });
 assert.deepEqual(parseRoute("#/"), { name: "search" });
 assert.deepEqual(parseRoute("#/nope"), { name: "search" });
+assert.deepEqual(parseRoute("#/settings"), { name: "settings" });
+assert.deepEqual(parseRoute("#/settings/"), { name: "settings" });
+assert.deepEqual(parseRoute("#/settings/x"), { name: "search" });
+assert.deepEqual(parseRoute("#/profiles"), { name: "profiles" });
 assert.deepEqual(parseRoute("#/show/169"), { name: "show", showId: 169 });
 assert.deepEqual(parseRoute("#/show/169/"), { name: "show", showId: 169 });
 assert.deepEqual(parseRoute("#/show/169?s=2&e=4"), { name: "show", showId: 169, position: { season: 2, episode: 4 } });
@@ -17,6 +21,8 @@ assert.deepEqual(parseRoute("#/show/169?s=0&e=1"), { name: "show", showId: 169 }
 assert.deepEqual(parseRoute("#/show/169?s=x&e=1"), { name: "show", showId: 169 });
 
 assert.equal(routeHash({ name: "search" }), "#/");
+assert.equal(routeHash({ name: "settings" }), "#/settings");
+assert.equal(routeHash({ name: "profiles" }), "#/profiles");
 assert.equal(routeHash({ name: "show", showId: 169 }), "#/show/169");
-for (const hash of ["#/", "#/show/169", "#/show/169?s=2&e=4"]) assert.equal(routeHash(parseRoute(hash)), hash);
+for (const hash of ["#/", "#/settings", "#/profiles", "#/show/169", "#/show/169?s=2&e=4"]) assert.equal(routeHash(parseRoute(hash)), hash);
 console.log("route tests passed");
