@@ -29,6 +29,22 @@ export async function searchShows(q: string): Promise<ShowHit[]> {
   }));
 }
 
+/** One show by TVmaze id, for opening a show straight from a link. */
+export async function getShow(id: number): Promise<ShowHit> {
+  const show: any = await withRetry(async () => {
+    const r = await fetch(`${BASE}/shows/${id}`);
+    if (!r.ok) throw new Error(`Show lookup failed (${r.status})`);
+    return r.json();
+  });
+  return {
+    id: show.id,
+    name: show.name,
+    premiered: show.premiered ?? undefined,
+    network: show.network?.name ?? show.webChannel?.name ?? undefined,
+    image: show.image?.medium ?? undefined,
+  };
+}
+
 /** Resolve a fixed list of show names (e.g. for curated mood cards or trending characters) to their ShowHit. */
 export async function resolveShowsByTitle(titles: string[]): Promise<Map<string, ShowHit>> {
   const pairs = await Promise.all(titles.map(async (title) => {
