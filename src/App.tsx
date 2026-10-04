@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { makeClient, type AgentClient, type TurnUsage } from "./agent/agent";
+import { friendlyError } from "./lib/errors";
+import { useRoute } from "./lib/route";
+import { getShow } from "./lib/tvmaze";
 import {
   clearCredentials, clearShowData, exportData, getProgress, importData, loadCredentials, saveCredentials, saveLibraryEntry, saveProgress,
   type Credentials,
@@ -13,13 +16,25 @@ import { PositionPicker } from "./components/PositionPicker";
 import { ProfilesTab } from "./components/ProfilesTab";
 import { ShowSearch } from "./components/ShowSearch";
 
+/** Where to open a show when the URL doesn't say: saved progress, else the first episode. */
+async function savedPosition(c: ShowCatalog): Promise<Position> {
+  const saved = await getProgress(c.showId).catch(() => undefined);
+  const season = saved && c.seasons.includes(saved.season) ? saved.season : c.seasons[0] ?? 1;
+  const episode = saved && saved.season === season && saved.episode <= c.episodeCount(season) ? saved.episode : 1;
+  return { season, episode };
+}
+
+const isValidPosition = (c: ShowCatalog, p: Position) =>
+  c.seasons.includes(p.season) && p.episode <= c.episodeCount(p.season);
+
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const client = useMemo<AgentClient | null>(() => credentials?.apiKey ? makeClient(credentials.provider, credentials.apiKey) : null, [credentials]);
 
+  const [route, navigate] = useRoute();
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
-  const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
+  const [loadFailure, setLoadFailure] = useState<{ showId: number; message: string } | null>(null);
   const [storageNotice, setStorageNotice] = useState("");
   const [usage, setUsage] = useState({ agentIn: 0, agentOut: 0, guardIn: 0, guardOut: 0 });
   const [view, setView] = useState<"main" | "apiKey" | "profiles">("main");
@@ -36,12 +51,37 @@ export default function App() {
   useEffect(() => {
     loadCredentials().then(setCredentials).catch(() => undefined).finally(() => setStorageReady(true));
   }, []);
+  // The URL owns the show and position; these are only set once the catalog for that show is loaded.
+  const routeShowId = route.name === "show" ? route.showId : null;
+  const showCatalog = catalog && catalog.showId === routeShowId ? catalog : null;
+  const urlPosition = route.name === "show" ? route.position : undefined;
+  const position = showCatalog && urlPosition && isValidPosition(showCatalog, urlPosition) ? urlPosition : null;
+  const showError = loadFailure && loadFailure.showId === routeShowId ? loadFailure.message : "";
+
+  // Opened from a link or a refresh: load the show named in the URL.
   useEffect(() => {
-    if (catalog) {
-      void saveProgress(catalog.showId, position).catch(() => undefined);
-      void saveLibraryEntry({ id: catalog.showId, name: catalog.showName, image: catalog.image }, position).catch(() => undefined);
+    if (!client || routeShowId === null || catalog?.showId === routeShowId) return;
+    let active = true;
+    getShow(routeShowId).then((hit) => new ShowCatalog(hit.id, hit.name, hit.image).load())
+      .then((c) => { if (active) setCatalog(c); })
+      .catch((e) => { if (active) setLoadFailure({ showId: routeShowId, message: friendlyError(e, "shows") }); });
+    return () => { active = false; };
+  }, [client, routeShowId, catalog]);
+  // No usable position in the URL: fill in saved progress without adding a Back step.
+  useEffect(() => {
+    if (!showCatalog || position) return;
+    let active = true;
+    void savedPosition(showCatalog).then((p) => {
+      if (active) navigate({ name: "show", showId: showCatalog.showId, position: p }, { replace: true });
+    });
+    return () => { active = false; };
+  }, [showCatalog, position, navigate]);
+  useEffect(() => {
+    if (showCatalog && position) {
+      void saveProgress(showCatalog.showId, position).catch(() => undefined);
+      void saveLibraryEntry({ id: showCatalog.showId, name: showCatalog.showName, image: showCatalog.image }, position).catch(() => undefined);
     }
-  }, [catalog, position]);
+  }, [showCatalog, position]);
 
   if (!storageReady) return <main className="narrow"><p className="status">Loading saved data…</p></main>;
   if (view === "profiles") return <ProfilesTab profiles={profiles} activeProfileId={activeProfileId} onBack={() => setView("main")} />;
@@ -81,31 +121,37 @@ export default function App() {
       {view === "apiKey" ? (
         <ApiKeyTab provider={client.provider} apiKey={credentials?.apiKey ?? ""} usage={usage}
           onChangeKey={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }} />
-      ) : !catalog ? (
+      ) : route.name === "search" ? (
         <ShowSearch onPick={async (hit, openingQuestion) => {
           const c = await new ShowCatalog(hit.id, hit.name, hit.image).load();
-          const saved = await getProgress(c.showId).catch(() => undefined);
-          const season = saved && c.seasons.includes(saved.season) ? saved.season : c.seasons[0] ?? 1;
-          const episode = saved && saved.season === season && saved.episode <= c.episodeCount(season) ? saved.episode : 1;
-          setPosition({ season, episode });
+          const p = await savedPosition(c);
           setCatalog(c);
           setPendingQuestion(openingQuestion ?? "");
+          navigate({ name: "show", showId: c.showId, position: p });
         }} />
+      ) : !showCatalog || !position ? (
+        <p className="status">
+          {showError || "Loading show…"}{" "}
+          {showError && <button className="link" onClick={() => navigate({ name: "search" })}>Pick another show</button>}
+        </p>
       ) : (
         <>
           <div className="show-row">
-            <h2>{catalog.showName}</h2>
+            <h2>{showCatalog.showName}</h2>
             <div className="show-actions">
               <button className="link" onClick={async () => {
-                if (!window.confirm(`Clear all saved progress and chat history for "${catalog.showName}"? This can't be undone.`)) return;
-                await clearShowData(catalog.showId).catch(() => undefined);
+                if (!window.confirm(`Clear all saved progress and chat history for "${showCatalog.showName}"? This can't be undone.`)) return;
+                await clearShowData(showCatalog.showId).catch(() => undefined);
                 setCatalog(null);
+                navigate({ name: "search" });
               }}>Clear this show</button>
-              <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
+              <button className="link" onClick={() => navigate({ name: "search" })}>Pick another show</button>
             </div>
           </div>
-          <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
-          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} onUsage={addUsage}
+          {/* Picking an episode replaces the URL, so Back leaves the show instead of stepping through episodes. */}
+          <PositionPicker catalog={showCatalog} position={position}
+            onChange={(p) => navigate({ name: "show", showId: showCatalog.showId, position: p }, { replace: true })} />
+          <Chat key={`${showCatalog.showId}:${position.season}:${position.episode}`} client={client} catalog={showCatalog} position={position} onUsage={addUsage}
             initialQuestion={pendingQuestion} onConsumeInitialQuestion={() => setPendingQuestion("")} />
         </>
       )}

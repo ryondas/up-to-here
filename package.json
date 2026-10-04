@@ -13,7 +13,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "tsx tests/gate.test.ts"
+    "test": "tsx tests/gate.test.ts && tsx tests/route.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

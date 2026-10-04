@@ -97,13 +97,14 @@ Moving your position backward clears the chat, since earlier answers may cover e
 | `src/agent/agent.ts` | Tool-use loop, system prompt, per-call token tracking |
 | `src/agent/guard.ts` | Spoiler check |
 | `src/agent/config.ts` | Model choices + approximate pricing |
-| `src/App.tsx` | App shell: key gate, header, switches between screens |
+| `src/lib/route.ts` | Hash routes (`#/`, `#/show/:id?s=&e=`) so Back, refresh and links work |
+| `src/App.tsx` | App shell: key gate, header, routes between search and a show |
 | `src/components/` | Key screen, profiles, show search/discovery, episode track, chat, API Key tab |
 
 ## Testing
 
 ```bash
-npm test         # spoiler-gate tests (network mocked)
+npm test         # spoiler-gate tests (network mocked) + route tests
 npm run lint      # oxlint
 npm run build     # type-checks, then builds the static site to dist/
 ```
