@@ -5,13 +5,17 @@ import { checkForSpoilers } from "./guard";
 import type { ShowCatalog, Position } from "../lib/catalog";
 
 import { MODELS } from "./config";
-const MAX_STEPS = 6;
+export const MAX_STEPS = 6;
 
 export type Provider = "anthropic" | "openai" | "gemini";
 export type AgentClient =
   | { provider: "anthropic"; client: Anthropic }
   | { provider: "openai"; client: OpenAI }
-  | { provider: "gemini"; apiKey: string };
+  /** `apiKey: null` is the free tier: calls go through /api/gemini, which holds the site's key. */
+  | { provider: "gemini"; apiKey: string | null; free?: FreeQuestion };
+type GeminiClient = Extract<AgentClient, { provider: "gemini" }>;
+/** One free-tier question. The server counts questions by id, not individual calls. */
+interface FreeQuestion { id: string; remaining?: number }
 
 export function makeClient(provider: Provider, apiKey: string): AgentClient {
   // Bring-your-own-key: the key lives only in this browser and is sent straight to the selected provider.
@@ -20,10 +24,25 @@ export function makeClient(provider: Provider, apiKey: string): AgentClient {
   return { provider, apiKey };
 }
 
+export const makeFreeClient = (): AgentClient => ({ provider: "gemini", apiKey: null });
+export const isFreeClient = (client: AgentClient) => client.provider === "gemini" && client.apiKey === null;
+
+/** The free tier is used up (or unavailable); the viewer needs their own key to keep asking. */
+export class FreeLimitError extends Error {
+  name = "FreeLimitError";
+  /** Free questions left today, when the server said (0 once this viewer's allowance is used up). */
+  readonly remaining?: number;
+  constructor(message: string, remaining?: number) { super(message); this.remaining = remaining; }
+}
+
 export interface Turn { role: "user" | "assistant"; content: string; }
 export interface Usage { input: number; output: number; }
 export interface TurnUsage { agent: Usage; guard: Usage; }
-export interface AgentResult { text: string; safe: boolean; sources: string[]; usage: TurnUsage; }
+export interface AgentResult {
+  text: string; safe: boolean; sources: string[]; usage: TurnUsage;
+  /** Free questions left today, when this question used the free tier. */
+  freeRemaining?: number;
+}
 
 function systemPrompt(showName: string, p: Position, current?: { title: string; summary: string }) {
   return `You are a spoiler-safe companion for the TV show "${showName}". The viewer has watched up to and including season ${p.season}, episode ${p.episode}${current ? ` ("${current.title}")` : ""}.
@@ -39,9 +58,10 @@ Rules:
 }
 
 export async function ask(
-  client: AgentClient, catalog: ShowCatalog, position: Position,
+  baseClient: AgentClient, catalog: ShowCatalog, position: Position,
   history: Turn[], question: string, onStatus: (s: string) => void, signal?: AbortSignal,
 ): Promise<AgentResult> {
+  const client: AgentClient = isFreeClient(baseClient) ? { provider: "gemini", apiKey: null, free: { id: crypto.randomUUID() } } : baseClient;
   const ctx: ToolContext = { catalog, position, retrieved: new Map() };
   const current = await catalog.getEpisode(position.season, position.episode, position).catch(() => undefined);
   if (current) ctx.retrieved.set(`S${current.season}E${current.number}`, current);
@@ -52,12 +72,13 @@ export async function ask(
   let text: string;
   if (client.provider === "anthropic") text = await askAnthropic(client.client, prompt, history, question, ctx, onStatus, signal, agentUsage);
   else if (client.provider === "openai") text = await askOpenAI(client.client, prompt, history, question, ctx, onStatus, signal, agentUsage);
-  else text = await askGemini(client.apiKey, prompt, history, question, ctx, onStatus, signal, agentUsage);
+  else text = await askGemini(client, prompt, history, question, ctx, onStatus, signal, agentUsage);
   if (!text) text = "I couldn't put an answer together from the episodes you've seen. Try asking more specifically.";
 
   onStatus("Checking for spoilers…");
   const safe = await checkForSpoilers(client, [...ctx.retrieved.values()], text, signal, guardUsage);
-  return { text, safe, sources: [...ctx.retrieved.keys()], usage: { agent: agentUsage, guard: guardUsage } };
+  const freeRemaining = client.provider === "gemini" ? client.free?.remaining : undefined;
+  return { text, safe, sources: [...ctx.retrieved.keys()], usage: { agent: agentUsage, guard: guardUsage }, freeRemaining };
 }
 
 async function askAnthropic(
@@ -142,7 +163,7 @@ type GeminiResponse = {
 };
 
 async function askGemini(
-  apiKey: string, system: string, history: Turn[], question: string, ctx: ToolContext,
+  client: GeminiClient, system: string, history: Turn[], question: string, ctx: ToolContext,
   onStatus: (s: string) => void, signal: AbortSignal | undefined, usage: Usage,
 ): Promise<string> {
   const contents: GeminiContent[] = [
@@ -152,7 +173,7 @@ async function askGemini(
   const tools = [{ functionDeclarations: TOOLS.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.input_schema })) }];
   for (let step = 0; step < MAX_STEPS; step++) {
     onStatus(step === 0 ? "Thinking…" : "Looking through the episodes you've seen…");
-    const res = await callGemini(apiKey, MODELS.gemini.agent, {
+    const res = await callGemini(client, MODELS.gemini.agent, {
       systemInstruction: { parts: [{ text: system }] },
       contents,
       tools,
@@ -179,8 +200,8 @@ async function askGemini(
   return "";
 }
 
-export async function askGeminiText(apiKey: string, model: string, prompt: string, signal?: AbortSignal, usage?: Usage): Promise<string> {
-  const res = await callGemini(apiKey, model, {
+export async function askGeminiText(client: GeminiClient, model: string, prompt: string, signal?: AbortSignal, usage?: Usage): Promise<string> {
+  const res = await callGemini(client, model, {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: { maxOutputTokens: 50 },
   }, signal);
@@ -188,14 +209,26 @@ export async function askGeminiText(apiKey: string, model: string, prompt: strin
   return res.candidates?.[0]?.content?.parts.map((part) => typeof part.text === "string" ? part.text : "").join("") ?? "";
 }
 
-async function callGemini(apiKey: string, model: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<GeminiResponse> {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  const data = await res.json() as GeminiResponse;
-  if (!res.ok) throw new Error(data.error?.message || `Gemini request failed (${res.status}).`);
+async function callGemini(client: GeminiClient, model: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<GeminiResponse> {
+  const res = client.apiKey !== null
+    ? await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(client.apiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    })
+    : await fetch("/api/gemini", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Question-Id": client.free?.id ?? "" },
+      body: JSON.stringify({ model, request: body }),
+      signal,
+    });
+  const remaining = res.headers.get("X-Free-Questions-Remaining");
+  if (client.free && remaining !== null) client.free.remaining = Number(remaining);
+  const data = await res.json().catch(() => ({})) as GeminiResponse & { code?: string };
+  if (!res.ok) {
+    if (data.code === "free_limit" || data.code === "free_unavailable") throw new FreeLimitError(data.error?.message || "The free tier is used up for now.", remaining === null ? undefined : Number(remaining));
+    throw new Error(data.error?.message || `Gemini request failed (${res.status}).`);
+  }
   return data;
 }

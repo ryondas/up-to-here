@@ -18,6 +18,12 @@ export const MODELS: Record<Provider, { agent: string; guard: string }> = {
 };
 
 /**
+ * Free tier: visitors without their own key ask through /api/gemini, which holds the site's
+ * Gemini key and enforces the limits. api/gemini.ts must match these (tests/freeTier.test.ts checks).
+ */
+export const FREE_TIER = { questionsPerDay: 10 };
+
+/**
  * Rough USD-per-1M-token list prices, for the session cost estimate shown in the UI.
  * Approximate and may drift from the provider's current pricing page — treat it as
  * a ballpark, not a bill. Update alongside MODELS if you swap a model above.

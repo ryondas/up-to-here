@@ -40,7 +40,7 @@ Reply with exactly one word: SAFE or UNSAFE.`;
       if (usage) { usage.input += res.usage?.prompt_tokens ?? 0; usage.output += res.usage?.completion_tokens ?? 0; }
       out = res.choices[0]?.message.content ?? "";
     } else {
-      out = await askGeminiText(client.apiKey, MODELS.gemini.guard, prompt, signal, usage);
+      out = await askGeminiText(client, MODELS.gemini.guard, prompt, signal, usage);
     }
     return out.includes("SAFE") && !out.includes("UNSAFE");
   } catch (e) {

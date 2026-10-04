@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Position, ShowCatalog } from "../lib/catalog";
-import { ask, type AgentClient, type Turn, type TurnUsage } from "../agent/agent";
+import { ask, FreeLimitError, isFreeClient, type AgentClient, type Turn, type TurnUsage } from "../agent/agent";
+import { FREE_TIER } from "../agent/config";
 import { friendlyError } from "../lib/errors";
 import { getChat, saveChat, type StoredChatMessage } from "../lib/storage";
 import { Attribution } from "./Attribution";
@@ -19,10 +20,14 @@ function buildQuickPrompts(current?: { title: string; summary: string }): string
   return [...specific, ...generic].slice(0, 4);
 }
 
-export function Chat({ client, catalog, position, onUsage, initialQuestion, onConsumeInitialQuestion }: {
+export function Chat({ client, catalog, position, onUsage, initialQuestion, onConsumeInitialQuestion, freeRemaining, onFreeRemaining, onAddKey }: {
   client: AgentClient; catalog: ShowCatalog; position: Position; onUsage: (u: TurnUsage) => void;
   initialQuestion?: string; onConsumeInitialQuestion: () => void;
+  /** Free questions left today, once the server has said; null before the first free question. */
+  freeRemaining: number | null; onFreeRemaining: (remaining: number) => void; onAddKey: () => void;
 }) {
+  const free = isFreeClient(client);
+  const [freeBlocked, setFreeBlocked] = useState("");
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [q, setQ] = useState(() => initialQuestion ?? "");
   const [status, setStatus] = useState("");
@@ -82,7 +87,16 @@ export function Chat({ client, catalog, position, onUsage, initialQuestion, onCo
       const tokens = r.usage.agent.input + r.usage.agent.output + r.usage.guard.input + r.usage.guard.output;
       setMsgs((m) => [...m, { role: "assistant", content: r.text, safe: r.safe, sources: r.sources, tokens }]);
       onUsage(r.usage);
+      if (r.freeRemaining !== undefined) onFreeRemaining(r.freeRemaining);
     } catch (e) {
+      if (e instanceof FreeLimitError) {
+        // Not an answer: drop the question from the chat and put it back in the box for after a key is added.
+        setMsgs((m) => m.slice(0, -1));
+        setQ(question);
+        setFreeBlocked(e.message);
+        if (e.remaining !== undefined) onFreeRemaining(e.remaining);
+        return;
+      }
       const msg = (e as Error).name === "AbortError" ? "Stopped." : friendlyError(e, "chat");
       setMsgs((m) => [...m, { role: "assistant", content: msg, safe: true }]);
     } finally { setStatus(""); }
@@ -137,8 +151,19 @@ export function Chat({ client, catalog, position, onUsage, initialQuestion, onCo
       <div className="row ask">
         <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" title="Press / to focus" />
-        <button className="primary" onClick={send} disabled={!!status || !historyReady}>Ask</button>
+        <button className="primary" onClick={send} disabled={!!status || !historyReady || (free && freeRemaining === 0)}>Ask</button>
       </div>
+      {free && (freeBlocked || freeRemaining === 0 ? (
+        <div className="free-limit" role="status">
+          <p>{freeBlocked || `You've used today's ${FREE_TIER.questionsPerDay} free questions. Add your own API key to keep asking, or come back tomorrow.`}</p>
+          <button className="primary" onClick={onAddKey}>Add your API key</button>
+        </div>
+      ) : (
+        <p className="free-note">
+          {freeRemaining === null ? `${FREE_TIER.questionsPerDay} free questions a day` : `${freeRemaining} free question${freeRemaining === 1 ? "" : "s"} left today`}
+          {" · "}<button className="link" onClick={onAddKey}>Use your own key</button>
+        </p>
+      ))}
       <Attribution catalog={catalog} season={position.season} />
     </section>
   );
