@@ -21,6 +21,17 @@ export async function searchShows(q: string): Promise<ShowHit[]> {
   }));
 }
 
+const SUGGESTED_TITLES = ["Breaking Bad", "The Bear", "Severance", "The Last of Us", "Succession", "The Office"];
+
+/** A small, varied starter rail for the empty search screen. */
+export async function getSuggestedShows(): Promise<ShowHit[]> {
+  const results = await Promise.all(SUGGESTED_TITLES.map(async (title) => {
+    const matches = await searchShows(title);
+    return matches.find((show) => show.name.toLocaleLowerCase() === title.toLocaleLowerCase()) ?? matches[0];
+  }));
+  return results.filter((show): show is ShowHit => Boolean(show));
+}
+
 export async function getEpisodes(showId: number): Promise<TvEpisode[]> {
   const r = await fetch(`${BASE}/shows/${showId}/episodes`);
   if (!r.ok) throw new Error(`Episode list failed (${r.status})`);
