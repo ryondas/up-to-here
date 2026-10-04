@@ -3,7 +3,7 @@
 const BASE = "https://api.tvmaze.com";
 
 export interface ShowHit { id: number; name: string; premiered?: string; network?: string; image?: string; }
-export interface TvEpisode { season: number; number: number; title: string; airdate?: string; summary: string; }
+export interface TvEpisode { season: number; number: number; title: string; airdate?: string; summary: string; image?: string; }
 
 const stripHtml = (s: string | null | undefined) =>
   (s ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -33,5 +33,6 @@ export async function getEpisodes(showId: number): Promise<TvEpisode[]> {
       title: e.name,
       airdate: e.airdate || undefined,
       summary: stripHtml(e.summary),
+      image: e.image?.medium ?? e.image?.original ?? undefined,
     }));
 }
