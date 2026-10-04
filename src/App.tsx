@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { searchShows, type ShowHit } from "./lib/tvmaze";
+import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
 import {
@@ -87,10 +87,17 @@ function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onS
 function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ShowHit[]>([]);
+  const [suggestions, setSuggestions] = useState<ShowHit[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<string[]>([]);
   useEffect(() => { getRecentSearches().then(setRecent).catch(() => undefined); }, []);
+  useEffect(() => {
+    let active = true;
+    getSuggestedShows().then((shows) => { if (active) setSuggestions(shows); }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
+    return () => { active = false; };
+  }, []);
   const go = async (query = q) => {
     if (!query.trim()) return;
     setBusy("Searching…"); setErr("");
@@ -108,6 +115,18 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
       </div>
       <p className="status">{busy || err}</p>
       {recent.length > 0 && <div className="recent"><span>Recent</span>{recent.map((query) => <button key={query} className="link" onClick={() => { setQ(query); void go(query); }}>{query}</button>)}</div>}
+      {!hits.length && <section className="suggested" aria-labelledby="suggested-title">
+        <h2 id="suggested-title">Suggested shows</h2>
+        {loadingSuggestions ? <p className="status">Finding something good…</p> : <div className="suggestion-rail">
+          {suggestions.map((show) => <button key={show.id} className="suggestion" onClick={async () => {
+            setBusy(`Loading ${show.name}…`);
+            try { await onPick(show); } catch (e) { setErr((e as Error).message); setBusy(""); }
+          }}>
+            {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
+            <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
+          </button>)}
+        </div>}
+      </section>}
       <ul className="hits">
         {hits.map((h) => (
           <li key={h.id}>
