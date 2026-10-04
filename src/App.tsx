@@ -11,21 +11,37 @@ import {
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
 const QUICK_PROMPTS = ["What just happened?", "Who is this again?", "Why is everyone upset?", "What should I remember?"];
 const MOODS = [
-  { label: "Tense & twisty", show: "Severance" },
-  { label: "Bingeable crime", show: "Breaking Bad" },
-  { label: "Big feelings", show: "The Bear" },
-  { label: "Prestige drama", show: "Succession" },
-  { label: "Comfort comedy", show: "The Office" },
-  { label: "Post-apocalyptic", show: "The Last of Us" },
+  { label: "Tense & twisty", shows: ["Severance", "Yellowjackets"] },
+  { label: "Bingeable crime", shows: ["Breaking Bad", "Better Call Saul"] },
+  { label: "Big feelings", shows: ["The Bear", "Fleabag"] },
+  { label: "Prestige drama", shows: ["Succession", "The Sopranos"] },
+  { label: "Comfort comedy", shows: ["The Office", "Parks and Recreation", "The Good Place"] },
+  { label: "Post-apocalyptic", shows: ["The Last of Us", "Yellowjackets"] },
 ];
 const TRENDING_CHARACTERS = [
   { name: "Walter White", show: "Breaking Bad" },
+  { name: "Saul Goodman", show: "Better Call Saul" },
   { name: "Carmy Berzatto", show: "The Bear" },
+  { name: "Sydney Adamu", show: "The Bear" },
   { name: "Mark Scout", show: "Severance" },
+  { name: "Helly Riggs", show: "Severance" },
   { name: "Ellie Williams", show: "The Last of Us" },
+  { name: "Joel Miller", show: "The Last of Us" },
   { name: "Kendall Roy", show: "Succession" },
+  { name: "Shiv Roy", show: "Succession" },
   { name: "Michael Scott", show: "The Office" },
+  { name: "Leslie Knope", show: "Parks and Recreation" },
+  { name: "Tony Soprano", show: "The Sopranos" },
+  { name: "Eleanor Shellstrop", show: "The Good Place" },
 ];
+const shuffle = <T,>(items: T[]) => {
+  const next = [...items];
+  for (let index = next.length - 1; index > 0; index--) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [next[index], next[swap]] = [next[swap], next[index]];
+  }
+  return next;
+};
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -40,7 +56,6 @@ export default function App() {
   useEffect(() => {
     loadCredentials().then(setCredentials).catch(() => undefined).finally(() => setStorageReady(true));
   }, []);
-
   useEffect(() => {
     if (catalog) void saveProgress(catalog.showId, position).catch(() => undefined);
   }, [catalog, position]);
@@ -139,6 +154,15 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
     getSuggestedShows().then((shows) => { if (active) setSuggestions(shows); }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
     return () => { active = false; };
   }, []);
+  const suggested = useMemo(() => suggestions.slice(0, 6), [suggestions]);
+  const moodCards = useMemo(() => shuffle(MOODS).map((mood) => ({
+    mood,
+    show: suggestions.find((candidate) => mood.shows.includes(candidate.name)),
+  })).filter((card): card is { mood: typeof MOODS[number]; show: ShowHit } => Boolean(card.show)).slice(0, 6), [suggestions]);
+  const characterCards = useMemo(() => shuffle(TRENDING_CHARACTERS).map((character) => ({
+    character,
+    show: suggestions.find((candidate) => candidate.name === character.show),
+  })).filter((card): card is { character: typeof TRENDING_CHARACTERS[number]; show: ShowHit } => Boolean(card.show)).slice(0, 6), [suggestions]);
   const go = async (query = q) => {
     if (!query.trim()) return;
     setBusy("Searching…"); setErr("");
@@ -166,7 +190,7 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
       {!hits.length && <section className="suggested" aria-labelledby="suggested-title">
         <h2 id="suggested-title">Suggested shows</h2>
         {loadingSuggestions ? <p className="status">Finding something good…</p> : <div className="suggestion-rail">
-          {suggestions.map((show) => <button key={show.id} className="suggestion" onClick={() => { void pick(show); }}>
+          {suggested.map((show) => <button key={show.id} className="suggestion" onClick={() => { void pick(show); }}>
             {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
             <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
           </button>)}
@@ -181,28 +205,22 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
           </button>)}
         </div>
       </section>}
-      {!hits.length && suggestions.length > 0 && <section className="suggested" aria-labelledby="moods-title">
+      {!hits.length && moodCards.length > 0 && <section className="suggested" aria-labelledby="moods-title">
         <h2 id="moods-title">Browse by mood</h2>
         <div className="mood-rail">
-          {MOODS.map((mood) => {
-            const show = suggestions.find((candidate) => candidate.name.toLocaleLowerCase() === mood.show.toLocaleLowerCase());
-            return show && <button key={mood.label} className="mood" onClick={() => { void pick(show); }}>
+          {moodCards.map(({ mood, show }) => <button key={mood.label} className="mood" onClick={() => { void pick(show); }}>
               {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
               <span><b>{mood.label}</b><small>{show.name}</small></span>
-            </button>;
-          })}
+            </button>)}
         </div>
       </section>}
-      {!hits.length && suggestions.length > 0 && <section className="suggested" aria-labelledby="characters-title">
+      {!hits.length && characterCards.length > 0 && <section className="suggested" aria-labelledby="characters-title">
         <h2 id="characters-title">Trending characters</h2>
         <div className="character-rail">
-          {TRENDING_CHARACTERS.map((character) => {
-            const show = suggestions.find((candidate) => candidate.name.toLocaleLowerCase() === character.show.toLocaleLowerCase());
-            return show && <button key={character.name} className="character" onClick={() => { void pick(show); }}>
+          {characterCards.map(({ character, show }) => <button key={character.name} className="character" onClick={() => { void pick(show); }}>
               {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
               <span><b>{character.name}</b><small>{show.name}</small></span>
-            </button>;
-          })}
+            </button>)}
         </div>
       </section>}
       <ul className="hits">
