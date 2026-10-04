@@ -1,14 +1,17 @@
 // Wikipedia: per-episode plot summaries from {{Episode list}} templates.
 // Content is CC BY-SA 4.0 — the UI shows attribution links for every page used.
 import { parseEpisodeList, type WikiEpisode } from "./wikitext";
+import { withRetry } from "./retry";
 
 const API = "https://en.wikipedia.org/w/api.php";
 
 async function api(params: Record<string, string>): Promise<any> {
   const qs = new URLSearchParams({ format: "json", formatversion: "2", origin: "*", ...params });
-  const r = await fetch(`${API}?${qs}`);
-  if (!r.ok) throw new Error(`Wikipedia request failed (${r.status})`);
-  return r.json();
+  return withRetry(async () => {
+    const r = await fetch(`${API}?${qs}`);
+    if (!r.ok) throw new Error(`Wikipedia request failed (${r.status})`);
+    return r.json();
+  });
 }
 
 /** Fetch raw wikitext for a title (following redirects). Returns null if the page doesn't exist. */
@@ -27,7 +30,7 @@ async function searchTitles(q: string): Promise<string[]> {
   return (data?.query?.search ?? []).map((s: any) => s.title as string);
 }
 
-export interface SeasonSource { pageTitle: string; url: string; episodes: WikiEpisode[]; }
+export interface SeasonSource { pageTitle: string; url: string; episodes: WikiEpisode[]; origin: "wikipedia" | "fandom"; }
 
 const pageUrl = (t: string) => `https://en.wikipedia.org/wiki/${encodeURIComponent(t.replace(/ /g, "_"))}`;
 
@@ -47,7 +50,7 @@ export async function getSeasonSummaries(
     if (!page) return null;
     let eps = parseEpisodeList(page.text);
     if (filterSeason && seasonCount > 1) eps = splitBySeason(eps, season);
-    return eps.length ? { pageTitle: page.title, url: pageUrl(page.title), episodes: eps } : null;
+    return eps.length ? { pageTitle: page.title, url: pageUrl(page.title), episodes: eps, origin: "wikipedia" } : null;
   };
 
   if (overrideTitle) return tryTitle(overrideTitle, false);

@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
-import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
+import { ask, makeClient, type AgentClient, type Provider, type Turn, type TurnUsage } from "./agent/agent";
+import { PRICING } from "./agent/config";
 import { friendlyError } from "./lib/errors";
 import {
-  clearCredentials, clearShowData, exportData, getChat, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
-  type Credentials, type StoredChatMessage,
+  clearCredentials, clearShowData, exportData, getChat, getLibrary, getProgress, getRecentShows, getSuggestedCache, importData, loadCredentials, saveChat, saveCredentials, saveLibraryEntry, saveProgress, saveRecentShow, saveSuggestedCache,
+  type Credentials, type LibraryEntry, type StoredChatMessage,
 } from "./lib/storage";
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
-const QUICK_PROMPTS = ["What just happened?", "Who is this again?", "Why is everyone upset?", "What should I remember?"];
 const MOODS = [
   { label: "Tense & twisty", shows: ["Severance", "Yellowjackets"] },
   { label: "Bingeable crime", shows: ["Breaking Bad", "Better Call Saul"] },
@@ -51,13 +51,22 @@ export default function App() {
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
   const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
   const [storageNotice, setStorageNotice] = useState("");
+  const [usage, setUsage] = useState({ agentIn: 0, agentOut: 0, guardIn: 0, guardOut: 0 });
+  const [view, setView] = useState<"main" | "apiKey">("main");
   const importRef = useRef<HTMLInputElement | null>(null);
+  const addUsage = (u: TurnUsage) => setUsage((prev) => ({
+    agentIn: prev.agentIn + u.agent.input, agentOut: prev.agentOut + u.agent.output,
+    guardIn: prev.guardIn + u.guard.input, guardOut: prev.guardOut + u.guard.output,
+  }));
 
   useEffect(() => {
     loadCredentials().then(setCredentials).catch(() => undefined).finally(() => setStorageReady(true));
   }, []);
   useEffect(() => {
-    if (catalog) void saveProgress(catalog.showId, position).catch(() => undefined);
+    if (catalog) {
+      void saveProgress(catalog.showId, position).catch(() => undefined);
+      void saveLibraryEntry({ id: catalog.showId, name: catalog.showName, image: catalog.image }, position).catch(() => undefined);
+    }
   }, [catalog, position]);
 
   if (!storageReady) return <main className="narrow"><p className="status">Loading saved data…</p></main>;
@@ -87,13 +96,16 @@ export default function App() {
               setStorageNotice(error instanceof Error ? error.message : "Couldn’t import that file.");
             });
           }} />
-          <button className="link" onClick={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }}>Change API key</button>
+          <button className="link" onClick={() => setView((v) => (v === "apiKey" ? "main" : "apiKey"))}>{view === "apiKey" ? "← Back" : "API Key"}</button>
         </div>
       </header>
       {storageNotice && <p className="status">{storageNotice}</p>}
-      {!catalog ? (
+      {view === "apiKey" ? (
+        <ApiKeyTab provider={client.provider} apiKey={credentials?.apiKey ?? ""} usage={usage}
+          onChangeKey={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }} />
+      ) : !catalog ? (
         <ShowSearch onPick={async (hit) => {
-          const c = await new ShowCatalog(hit.id, hit.name).load();
+          const c = await new ShowCatalog(hit.id, hit.name, hit.image).load();
           const saved = await getProgress(c.showId).catch(() => undefined);
           const season = saved && c.seasons.includes(saved.season) ? saved.season : c.seasons[0] ?? 1;
           const episode = saved && saved.season === season && saved.episode <= c.episodeCount(season) ? saved.episode : 1;
@@ -105,15 +117,55 @@ export default function App() {
           <div className="show-row">
             <h2>{catalog.showName}</h2>
             <div className="show-actions">
-              <button className="link" onClick={async () => { await clearShowData(catalog.showId).catch(() => undefined); setCatalog(null); }}>Clear this show</button>
+              <button className="link" onClick={async () => {
+                if (!window.confirm(`Clear all saved progress and chat history for "${catalog.showName}"? This can't be undone.`)) return;
+                await clearShowData(catalog.showId).catch(() => undefined);
+                setCatalog(null);
+              }}>Clear this show</button>
               <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
             </div>
           </div>
           <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
-          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} />
+          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} onUsage={addUsage} />
         </>
       )}
     </main>
+  );
+}
+
+const PROVIDER_LABELS: Record<Provider, string> = { anthropic: "Anthropic (Claude)", openai: "OpenAI (GPT)", gemini: "Google (Gemini)" };
+
+function ApiKeyTab({ provider, apiKey, usage, onChangeKey }: {
+  provider: Provider; apiKey: string;
+  usage: { agentIn: number; agentOut: number; guardIn: number; guardOut: number };
+  onChangeKey: () => void;
+}) {
+  const masked = apiKey.length > 8 ? `${apiKey.slice(0, 4)}••••••••${apiKey.slice(-4)}` : "••••••••";
+  const totalTokens = usage.agentIn + usage.agentOut + usage.guardIn + usage.guardOut;
+  const answerTokens = usage.agentIn + usage.agentOut;
+  const guardTokens = usage.guardIn + usage.guardOut;
+  const price = PRICING[provider];
+  const cost = (usage.agentIn / 1e6) * price.agent.input + (usage.agentOut / 1e6) * price.agent.output
+    + (usage.guardIn / 1e6) * price.guard.input + (usage.guardOut / 1e6) * price.guard.output;
+  return (
+    <section className="api-key-tab">
+      <h2>API key</h2>
+      <p className="field">Provider</p>
+      <p>{PROVIDER_LABELS[provider]}</p>
+      <p className="field">Key</p>
+      <p className="hint">{masked}</p>
+      <button className="link" onClick={onChangeKey}>Change API key</button>
+
+      <h2>Usage this session</h2>
+      {totalTokens > 0 ? (
+        <>
+          <p className="usage" title="Rough estimate from approximate per-token list prices — check your provider's billing page for the exact amount.">
+            ~${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)} · {totalTokens.toLocaleString()} tokens
+          </p>
+          <p className="hint">{answerTokens.toLocaleString()} answering questions · {guardTokens.toLocaleString()} checking for spoilers</p>
+        </>
+      ) : <p className="status">No questions asked yet this session.</p>}
+    </section>
   );
 }
 
@@ -148,10 +200,19 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<ShowHit[]>([]);
+  const [library, setLibrary] = useState<LibraryEntry[]>([]);
   useEffect(() => { getRecentShows().then(setRecent).catch(() => undefined); }, []);
+  useEffect(() => { getLibrary().then(setLibrary).catch(() => undefined); }, []);
   useEffect(() => {
     let active = true;
-    getSuggestedShows().then((shows) => { if (active) setSuggestions(shows); }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
+    // Show cached suggestions instantly if we have them, then quietly refresh from the network.
+    getSuggestedCache().then((cached) => {
+      if (active && cached?.length) { setSuggestions(cached); setLoadingSuggestions(false); }
+    }).catch(() => undefined);
+    getSuggestedShows().then((shows) => {
+      if (active) setSuggestions(shows);
+      void saveSuggestedCache(shows).catch(() => undefined);
+    }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
     return () => { active = false; };
   }, []);
   const suggested = useMemo(() => suggestions.slice(0, 6), [suggestions]);
@@ -187,6 +248,15 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
         <button className="primary" onClick={() => { void go(); }}>Search</button>
       </div>
       <p className="status">{busy || err}</p>
+      {!hits.length && library.length > 0 && <section className="suggested" aria-labelledby="continue-title">
+        <h2 id="continue-title">Continue watching</h2>
+        <div className="suggestion-rail">
+          {library.slice(0, 8).map((entry) => <button key={entry.show.id} className="suggestion" onClick={() => { void pick(entry.show); }}>
+            {entry.show.image ? <img src={entry.show.image} alt="" /> : <span className="noart" />}
+            <span><b>{entry.show.name}</b><small>Resume at S{entry.position.season}E{entry.position.episode}</small></span>
+          </button>)}
+        </div>
+      </section>}
       {!hits.length && <section className="suggested" aria-labelledby="suggested-title">
         <h2 id="suggested-title">Suggested shows</h2>
         {loadingSuggestions ? <p className="status">Finding something good…</p> : <div className="suggestion-rail">
@@ -271,12 +341,27 @@ function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog;
   );
 }
 
-function Chat({ client, catalog, position }: { client: AgentClient; catalog: ShowCatalog; position: Position }) {
+/** A couple of generic prompts, plus ones built from names actually in the current episode's summary — never from future ones. */
+function buildQuickPrompts(current?: { title: string; summary: string }): string[] {
+  const generic = ["What just happened?", "What should I remember?"];
+  if (!current) return [...generic, "Who is this again?", "Why is everyone upset?"];
+  const STOP_WORDS = new Set(["The", "A", "An", "In", "On", "At", "When", "Why", "How", "After", "Before", "While", "This", "That"]);
+  const names = [...new Set((current.summary.match(/\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\b/g) ?? [])
+    .filter((name) => !STOP_WORDS.has(name.split(" ")[0])))].slice(0, 2);
+  const specific = names.map((name) => `Who is ${name}?`);
+  if (current.title) specific.unshift(`What happened in "${current.title}"?`);
+  return [...specific, ...generic].slice(0, 4);
+}
+
+function Chat({ client, catalog, position, onUsage }: { client: AgentClient; catalog: ShowCatalog; position: Position; onUsage: (u: TurnUsage) => void }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [historyReady, setHistoryReady] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [current, setCurrent] = useState<{ title: string; summary: string } | undefined>();
   const ctl = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -290,6 +375,24 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
     if (historyReady && msgs.length > 0) void saveChat(catalog.showId, position, msgs).catch(() => undefined);
   }, [catalog.showId, historyReady, msgs, position]);
 
+  useEffect(() => {
+    let active = true;
+    catalog.getEpisode(position.season, position.episode, position).then((ep) => { if (active) setCurrent(ep); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [catalog, position]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const typing = document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement || document.activeElement instanceof HTMLSelectElement;
+      if (e.key === "/" && !typing) { e.preventDefault(); inputRef.current?.focus(); }
+      else if (e.key === "Escape" && status) ctl.current?.abort();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [status]);
+
+  const quickPrompts = useMemo(() => buildQuickPrompts(current), [current]);
+
   const send = async () => {
     const question = q.trim();
     if (!question || status || !historyReady) return;
@@ -299,15 +402,40 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
     ctl.current = new AbortController();
     try {
       const r = await ask(client, catalog, position, history, question, setStatus, ctl.current.signal);
-      setMsgs((m) => [...m, { role: "assistant", content: r.text, safe: r.safe, sources: r.sources }]);
+      const tokens = r.usage.agent.input + r.usage.agent.output + r.usage.guard.input + r.usage.guard.output;
+      setMsgs((m) => [...m, { role: "assistant", content: r.text, safe: r.safe, sources: r.sources, tokens }]);
+      onUsage(r.usage);
     } catch (e) {
       const msg = (e as Error).name === "AbortError" ? "Stopped." : friendlyError(e, "chat");
       setMsgs((m) => [...m, { role: "assistant", content: msg, safe: true }]);
     } finally { setStatus(""); }
   };
 
+  const copy = (i: number, content: string) => {
+    void navigator.clipboard.writeText(content).then(() => {
+      setCopiedIndex(i);
+      setTimeout(() => setCopiedIndex((c) => (c === i ? null : c)), 1500);
+    }).catch(() => undefined);
+  };
+
+  const exportChat = () => {
+    const lines = [
+      `Up to here — ${catalog.showName}`,
+      `Watched through S${position.season}E${position.episode}`,
+      "",
+      ...msgs.map((m) => m.role === "assistant" && m.safe === false && !m.revealed
+        ? "Assistant: [hidden — flagged as a possible spoiler]"
+        : `${m.role === "user" ? "You" : "Assistant"}: ${m.content}`),
+    ];
+    const href = URL.createObjectURL(new Blob([lines.join("\n\n")], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = href; a.download = `up-to-here-${catalog.showName.toLowerCase().replace(/\s+/g, "-")}-chat.txt`; a.click();
+    URL.revokeObjectURL(href);
+  };
+
   return (
     <section className="chat">
+      {msgs.length > 0 && <button className="link export-chat" onClick={exportChat}>Export this chat</button>}
       {msgs.map((m, i) => (
         <div key={i} className={`msg ${m.role} ${m.safe === false && !m.revealed ? "flagged" : ""}`}>
           {m.role === "assistant" && m.safe === false && !m.revealed ? (
@@ -316,29 +444,65 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
               <button onClick={() => setMsgs((all) => all.map((x, j) => (j === i ? { ...x, revealed: true } : x)))}>Show it anyway</button>
             </div>
           ) : <p>{m.content}</p>}
-          {m.sources && m.sources.length > 0 && (!m.safe ? m.revealed : true) && <small className="src">From {m.sources.join(", ")}</small>}
+          {m.role === "assistant" && (!m.safe ? m.revealed : true) && (
+            <div className="msg-actions">
+              {m.sources && m.sources.length > 0 && <small className="src">From {m.sources.join(", ")}</small>}
+              {m.tokens !== undefined && <small className="src">{m.tokens.toLocaleString()} tokens</small>}
+              <button className="link" onClick={() => copy(i, m.content)}>{copiedIndex === i ? "Copied!" : "Copy"}</button>
+            </div>
+          )}
         </div>
       ))}
       {(status || !historyReady) && <p className="status">{status || "Loading saved chat…"} {status && <button className="link" onClick={() => ctl.current?.abort()}>Stop</button>}</p>}
       <div className="quick-prompts" aria-label="Quick prompts">
-        {QUICK_PROMPTS.map((prompt) => <button key={prompt} onClick={() => setQ(prompt)}>{prompt}</button>)}
+        {quickPrompts.map((prompt) => <button key={prompt} onClick={() => setQ(prompt)}>{prompt}</button>)}
       </div>
       <div className="row ask">
-        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" />
+        <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" title="Press / to focus" />
         <button className="primary" onClick={send} disabled={!!status || !historyReady}>Ask</button>
       </div>
-      <Attribution catalog={catalog} />
+      <Attribution catalog={catalog} season={position.season} />
     </section>
   );
 }
 
-function Attribution({ catalog }: { catalog: ShowCatalog }) {
+function Attribution({ catalog, season }: { catalog: ShowCatalog; season: number }) {
+  const [, forceUpdate] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState("");
+  const [status, setStatus] = useState("");
   const pages = [...catalog.sources.values()];
+  const wikiPages = pages.filter((p) => p.origin === "wikipedia");
+  const fandomPages = pages.filter((p) => p.origin === "fandom");
+  const hasSource = catalog.sources.has(season);
+
+  const save = async () => {
+    const t = title.trim();
+    if (!t) return;
+    setStatus("Looking up that page…");
+    const result = await catalog.setOverride(season, t).catch(() => null);
+    if (!result) { setStatus("Couldn’t find episode summaries on that page."); return; }
+    setStatus(""); setEditing(false); setTitle("");
+    forceUpdate((n) => n + 1); // catalog.sources mutated in place; re-render to pick it up
+  };
+
   return (
-    <p className="attrib">
-      Episode data from <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a>
-      {pages.length > 0 && <> and Wikipedia ({pages.map((p, i) => <span key={p.url}>{i > 0 && ", "}<a href={p.url} target="_blank" rel="noreferrer">{p.pageTitle}</a></span>)}), CC BY-SA 4.0</>}.
-    </p>
+    <>
+      <p className="attrib">
+        Episode data from <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer">TVmaze</a>
+        {wikiPages.length > 0 && <> and Wikipedia ({wikiPages.map((p, i) => <span key={p.url}>{i > 0 && ", "}<a href={p.url} target="_blank" rel="noreferrer">{p.pageTitle}</a></span>)}), CC BY-SA 4.0</>}
+        {fandomPages.length > 0 && <> and Fandom ({fandomPages.map((p, i) => <span key={p.url}>{i > 0 && ", "}<a href={p.url} target="_blank" rel="noreferrer">{p.pageTitle}</a></span>)}), CC BY-SA 4.0</>}.
+        {" "}<button className="link" onClick={() => setEditing((e) => !e)}>{hasSource ? "Wrong page?" : "Missing summaries?"}</button>
+      </p>
+      {editing && (
+        <div className="row override">
+          <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void save()}
+            placeholder={`Wikipedia page for season ${season}, e.g. "${catalog.showName} (season ${season})"`} aria-label="Wikipedia page title" />
+          <button className="link" onClick={() => { void save(); }}>Use this page</button>
+        </div>
+      )}
+      {status && <p className="status">{status}</p>}
+    </>
   );
 }

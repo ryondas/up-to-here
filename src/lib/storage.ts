@@ -7,10 +7,12 @@ export interface StoredChatMessage {
   safe?: boolean;
   revealed?: boolean;
   sources?: string[];
+  tokens?: number;
 }
+export interface LibraryEntry { show: ShowHit; position: StoredPosition; updatedAt: string; }
 
 const DB_NAME = "up-to-here";
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 const LEGACY_KEY = "uth-api-key";
 const LEGACY_PROVIDER = "uth-api-provider";
 
@@ -21,38 +23,50 @@ function request<T>(value: IDBRequest<T>) {
   });
 }
 
-const db = new Promise<IDBDatabase>((resolve, reject) => {
-  const open = indexedDB.open(DB_NAME, DB_VERSION);
-  open.onupgradeneeded = () => {
-    const database = open.result;
-    if (!database.objectStoreNames.contains("settings")) database.createObjectStore("settings");
-    if (!database.objectStoreNames.contains("progress")) database.createObjectStore("progress");
-    if (!database.objectStoreNames.contains("chats")) database.createObjectStore("chats");
-    if (!database.objectStoreNames.contains("recentSearches")) database.createObjectStore("recentSearches");
-  };
-  open.onsuccess = () => resolve(open.result);
-  open.onerror = () => reject(open.error);
-});
+// Opened lazily (not at module load) so importing this module is safe in non-browser
+// contexts, e.g. the Node test suite, where `indexedDB` doesn't exist.
+let dbPromise: Promise<IDBDatabase> | null = null;
+function openDb(): Promise<IDBDatabase> {
+  if (!dbPromise) {
+    dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(DB_NAME, DB_VERSION);
+      open.onupgradeneeded = () => {
+        const database = open.result;
+        if (!database.objectStoreNames.contains("settings")) database.createObjectStore("settings");
+        if (!database.objectStoreNames.contains("progress")) database.createObjectStore("progress");
+        if (!database.objectStoreNames.contains("chats")) database.createObjectStore("chats");
+        if (!database.objectStoreNames.contains("recentSearches")) database.createObjectStore("recentSearches");
+        if (!database.objectStoreNames.contains("wikiCache")) database.createObjectStore("wikiCache");
+        if (!database.objectStoreNames.contains("library")) database.createObjectStore("library");
+        if (!database.objectStoreNames.contains("episodeCache")) database.createObjectStore("episodeCache");
+        if (!database.objectStoreNames.contains("suggestedCache")) database.createObjectStore("suggestedCache");
+      };
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+    });
+  }
+  return dbPromise;
+}
 
 async function get<T>(store: string, key: IDBValidKey): Promise<T | undefined> {
-  const database = await db;
+  const database = await openDb();
   const tx = database.transaction(store, "readonly");
   return request(tx.objectStore(store).get(key));
 }
 
 async function put(store: string, value: unknown, key: IDBValidKey) {
-  const database = await db;
+  const database = await openDb();
   const tx = database.transaction(store, "readwrite");
   await request(tx.objectStore(store).put(value, key));
 }
 
 async function remove(store: string, key: IDBValidKey) {
-  const database = await db;
+  const database = await openDb();
   const tx = database.transaction(store, "readwrite");
   await request(tx.objectStore(store).delete(key));
 }
 
-const STORES = ["settings", "progress", "chats", "recentSearches"] as const;
+const STORES = ["settings", "progress", "chats", "recentSearches", "wikiCache", "library", "episodeCache", "suggestedCache"] as const;
 type StoreName = typeof STORES[number];
 type BackupEntry = [IDBValidKey, unknown];
 export interface DataBackup {
@@ -62,7 +76,7 @@ export interface DataBackup {
 }
 
 async function entries(store: StoreName): Promise<BackupEntry[]> {
-  const database = await db;
+  const database = await openDb();
   const tx = database.transaction(store, "readonly");
   const objectStore = tx.objectStore(store);
   const [keys, values] = await Promise.all([request(objectStore.getAllKeys()), request(objectStore.getAll())]);
@@ -81,7 +95,7 @@ function isBackup(data: unknown): data is DataBackup {
 }
 
 async function replaceEntries(store: StoreName, values: BackupEntry[]) {
-  const database = await db;
+  const database = await openDb();
   const tx = database.transaction(store, "readwrite");
   const objectStore = tx.objectStore(store);
   objectStore.clear();
@@ -129,19 +143,26 @@ export const getChat = (showId: number, position: StoredPosition) => get<StoredC
 export const saveChat = (showId: number, position: StoredPosition, messages: StoredChatMessage[]) =>
   put("chats", messages, chatKey(showId, position));
 
-export async function clearShowData(showId: number) {
-  await remove("progress", showId);
-  const database = await db;
-  const read = database.transaction("chats", "readonly");
-  const keys = await request(read.objectStore("chats").getAllKeys());
-  const tx = database.transaction("chats", "readwrite");
-  const chats = tx.objectStore("chats");
-  keys.filter((key): key is string => typeof key === "string" && key.startsWith(`${showId}:`)).forEach((key) => chats.delete(key));
+async function clearPrefixed(database: IDBDatabase, store: StoreName, prefix: string) {
+  const read = database.transaction(store, "readonly");
+  const keys = await request(read.objectStore(store).getAllKeys());
+  const tx = database.transaction(store, "readwrite");
+  const objectStore = tx.objectStore(store);
+  keys.filter((key): key is string => typeof key === "string" && key.startsWith(prefix)).forEach((key) => objectStore.delete(key));
   await new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
   });
+}
+
+export async function clearShowData(showId: number) {
+  await remove("progress", showId);
+  await remove("library", showId);
+  await remove("episodeCache", showId);
+  const database = await openDb();
+  await clearPrefixed(database, "chats", `${showId}:`);
+  await clearPrefixed(database, "wikiCache", `${showId}:`);
 }
 
 export const getRecentShows = () => get<ShowHit[]>("recentSearches", "shows").then((shows) => Array.isArray(shows) ? shows : []);
@@ -151,4 +172,28 @@ export async function saveRecentShow(show: ShowHit) {
   await put("recentSearches", next, "shows");
   return next;
 }
-import type { ShowHit } from "./tvmaze";
+
+const wikiCacheKey = (showId: number, season: number) => `${showId}:${season}`;
+export const getWikiCache = (showId: number, season: number) => get<SeasonSource>("wikiCache", wikiCacheKey(showId, season));
+export const saveWikiCache = (showId: number, season: number, source: SeasonSource) => put("wikiCache", source, wikiCacheKey(showId, season));
+export const clearWikiCache = (showId: number, season: number) => remove("wikiCache", wikiCacheKey(showId, season));
+
+export const getLibrary = () => entries("library").then((rows) => (rows.map(([, value]) => value) as LibraryEntry[]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+export const saveLibraryEntry = (show: ShowHit, position: StoredPosition) => put("library", { show, position, updatedAt: new Date().toISOString() } satisfies LibraryEntry, show.id);
+export const removeLibraryEntry = (showId: number) => remove("library", showId);
+
+interface EpisodeCacheEntry { episodes: TvEpisode[]; cachedAt: string; }
+const EPISODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // a day — long enough to skip repeat fetches, short enough that airing shows pick up new episodes promptly
+export async function getEpisodeCache(showId: number): Promise<TvEpisode[] | undefined> {
+  const entry = await get<EpisodeCacheEntry>("episodeCache", showId);
+  if (!entry || Date.now() - new Date(entry.cachedAt).getTime() > EPISODE_CACHE_TTL_MS) return undefined;
+  return entry.episodes;
+}
+export const saveEpisodeCache = (showId: number, episodes: TvEpisode[]) =>
+  put("episodeCache", { episodes, cachedAt: new Date().toISOString() } satisfies EpisodeCacheEntry, showId);
+
+export const getSuggestedCache = () => get<ShowHit[]>("suggestedCache", "shows");
+export const saveSuggestedCache = (shows: ShowHit[]) => put("suggestedCache", shows, "shows");
+
+import type { ShowHit, TvEpisode } from "./tvmaze";
+import type { SeasonSource } from "./wikipedia";
