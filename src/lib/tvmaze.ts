@@ -21,7 +21,19 @@ export async function searchShows(q: string): Promise<ShowHit[]> {
   }));
 }
 
-const SUGGESTED_TITLES = ["Breaking Bad", "The Bear", "Severance", "The Last of Us", "Succession", "The Office"];
+const SUGGESTED_TITLES = [
+  "Breaking Bad", "Better Call Saul", "The Bear", "Severance", "The Last of Us", "Succession",
+  "The Office", "Parks and Recreation", "The Sopranos", "Yellowjackets", "Fleabag", "The Good Place",
+];
+
+const shuffle = <T,>(items: T[]) => {
+  const next = [...items];
+  for (let index = next.length - 1; index > 0; index--) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [next[index], next[swap]] = [next[swap], next[index]];
+  }
+  return next;
+};
 
 /** A small, varied starter rail for the empty search screen. */
 export async function getSuggestedShows(): Promise<ShowHit[]> {
@@ -29,7 +41,7 @@ export async function getSuggestedShows(): Promise<ShowHit[]> {
     const matches = await searchShows(title);
     return matches.find((show) => show.name.toLocaleLowerCase() === title.toLocaleLowerCase()) ?? matches[0];
   }));
-  return results.filter((show): show is ShowHit => Boolean(show));
+  return shuffle(results.filter((show): show is ShowHit => Boolean(show)));
 }
 
 export async function getEpisodes(showId: number): Promise<TvEpisode[]> {

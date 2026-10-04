@@ -52,6 +52,52 @@ async function remove(store: string, key: IDBValidKey) {
   await request(tx.objectStore(store).delete(key));
 }
 
+const STORES = ["settings", "progress", "chats", "recentSearches"] as const;
+type StoreName = typeof STORES[number];
+type BackupEntry = [IDBValidKey, unknown];
+export interface DataBackup {
+  version: 1;
+  exportedAt: string;
+  stores: Record<StoreName, BackupEntry[]>;
+}
+
+async function entries(store: StoreName): Promise<BackupEntry[]> {
+  const database = await db;
+  const tx = database.transaction(store, "readonly");
+  const objectStore = tx.objectStore(store);
+  const [keys, values] = await Promise.all([request(objectStore.getAllKeys()), request(objectStore.getAll())]);
+  return keys.map((key, index) => [key, values[index]]);
+}
+
+export async function exportData(): Promise<DataBackup> {
+  const all = await Promise.all(STORES.map(entries));
+  return { version: 1, exportedAt: new Date().toISOString(), stores: Object.fromEntries(STORES.map((store, index) => [store, all[index]])) as DataBackup["stores"] };
+}
+
+function isBackup(data: unknown): data is DataBackup {
+  if (!data || typeof data !== "object" || (data as { version?: unknown }).version !== 1) return false;
+  const stores = (data as { stores?: unknown }).stores;
+  return Boolean(stores && typeof stores === "object" && STORES.every((store) => Array.isArray((stores as Record<string, unknown>)[store])));
+}
+
+async function replaceEntries(store: StoreName, values: BackupEntry[]) {
+  const database = await db;
+  const tx = database.transaction(store, "readwrite");
+  const objectStore = tx.objectStore(store);
+  objectStore.clear();
+  values.forEach(([key, value]) => objectStore.put(value, key));
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+export async function importData(data: unknown) {
+  if (!isBackup(data)) throw new Error("That file is not an Up to here backup.");
+  await Promise.all(STORES.map((store) => replaceEntries(store, data.stores[store])));
+}
+
 export async function loadCredentials(): Promise<Credentials | null> {
   const saved = await get<Credentials>("settings", "credentials");
   if (saved?.apiKey) return saved;
@@ -82,6 +128,21 @@ const chatKey = (showId: number, position: StoredPosition) => `${showId}:S${posi
 export const getChat = (showId: number, position: StoredPosition) => get<StoredChatMessage[]>("chats", chatKey(showId, position));
 export const saveChat = (showId: number, position: StoredPosition, messages: StoredChatMessage[]) =>
   put("chats", messages, chatKey(showId, position));
+
+export async function clearShowData(showId: number) {
+  await remove("progress", showId);
+  const database = await db;
+  const read = database.transaction("chats", "readonly");
+  const keys = await request(read.objectStore("chats").getAllKeys());
+  const tx = database.transaction("chats", "readwrite");
+  const chats = tx.objectStore("chats");
+  keys.filter((key): key is string => typeof key === "string" && key.startsWith(`${showId}:`)).forEach((key) => chats.delete(key));
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
 
 export const getRecentShows = () => get<ShowHit[]>("recentSearches", "shows").then((shows) => Array.isArray(shows) ? shows : []);
 export async function saveRecentShow(show: ShowHit) {
