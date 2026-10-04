@@ -1,15 +1,17 @@
 // Builds the episode catalog for a show and caches Wikipedia lookups per season.
 import { getEpisodes, type TvEpisode } from "./tvmaze";
 import { getSeasonSummaries, type SeasonSource } from "./wikipedia";
+import { getFandomSeasonSummaries } from "./fandom";
+import { getEpisodeCache, getWikiCache, saveEpisodeCache, saveWikiCache, clearWikiCache } from "./storage";
 
 export interface Episode {
   season: number;
   number: number;
   title: string;
   airdate?: string;
-  /** Best available summary: Wikipedia plot summary if found, else TVmaze blurb. */
+  /** Best available summary: Wikipedia plot summary if found, then Fandom, else the TVmaze blurb. */
   summary: string;
-  source: "wikipedia" | "tvmaze" | "none";
+  source: "wikipedia" | "fandom" | "tvmaze" | "none";
 }
 
 export interface Position { season: number; episode: number; }
@@ -23,10 +25,15 @@ export class ShowCatalog {
   readonly sources = new Map<number, SeasonSource>();
   readonly showId: number;
   readonly showName: string;
-  constructor(showId: number, showName: string) { this.showId = showId; this.showName = showName; }
+  readonly image?: string;
+  constructor(showId: number, showName: string, image?: string) { this.showId = showId; this.showName = showName; this.image = image; }
 
+  /** The episode skeleton (numbering, titles, air dates) rarely changes once a show has aired, so it's cached in IndexedDB. */
   async load() {
+    const cached = await getEpisodeCache(this.showId).catch(() => undefined);
+    if (cached?.length) { this.skeleton = cached; return this; }
     this.skeleton = await getEpisodes(this.showId);
+    void saveEpisodeCache(this.showId, this.skeleton).catch(() => undefined);
     return this;
   }
 
@@ -40,16 +47,29 @@ export class ShowCatalog {
   /** Titles are only exposed for episodes the viewer has seen — future titles can spoil. */
   seenSkeleton(p: Position) { return this.skeleton.filter((e) => isSeen(e, p)); }
 
-  /** Fetch Wikipedia summaries ONLY for seasons at or before the viewer's position. */
+  /** Fetch Wikipedia summaries ONLY for seasons at or before the viewer's position. Persisted in IndexedDB so repeat visits skip the network + parse. */
   private seasonWiki(season: number, overrideTitle?: string) {
     const key = season;
-    if (overrideTitle) this.wiki.delete(key);
-    if (!this.wiki.has(key)) {
-      this.wiki.set(key, getSeasonSummaries(this.showName, season, this.seasons.length, overrideTitle)
-        .then((s) => { if (s) this.sources.set(season, s); return s; })
-        .catch(() => null));
+    if (overrideTitle) {
+      this.wiki.delete(key);
+      void clearWikiCache(this.showId, season).catch(() => undefined);
     }
+    if (!this.wiki.has(key)) this.wiki.set(key, this.loadSeasonWiki(season, overrideTitle));
     return this.wiki.get(key)!;
+  }
+
+  private async loadSeasonWiki(season: number, overrideTitle?: string): Promise<SeasonSource | null> {
+    if (!overrideTitle) {
+      const cached = await getWikiCache(this.showId, season).catch(() => undefined);
+      if (cached) { this.sources.set(season, cached); return cached; }
+    }
+    const s = await getSeasonSummaries(this.showName, season, this.seasons.length, overrideTitle).catch(() => null)
+      ?? (overrideTitle ? null : await getFandomSeasonSummaries(this.showName, season).catch(() => null));
+    if (s) {
+      this.sources.set(season, s);
+      void saveWikiCache(this.showId, season, s).catch(() => undefined);
+    }
+    return s;
   }
 
   setOverride(season: number, title: string) { return this.seasonWiki(season, title); }
@@ -63,7 +83,7 @@ export class ShowCatalog {
     const w = wiki?.episodes.find((x) => x.numberInSeason === number)
       ?? wiki?.episodes[number - 1]; // fall back to order on the page
     const summary = w?.summary || base.summary;
-    return { ...base, summary, source: w?.summary ? "wikipedia" : base.summary ? "tvmaze" : "none" };
+    return { ...base, summary, source: w?.summary ? wiki!.origin : base.summary ? "tvmaze" : "none" };
   }
 
   async getSeenEpisodes(p: Position): Promise<Episode[]> {
