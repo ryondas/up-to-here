@@ -10,6 +10,14 @@ import {
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
 const QUICK_PROMPTS = ["What just happened?", "Who is this again?", "Why is everyone upset?", "What should I remember?"];
+const MOODS = [
+  { label: "Tense & twisty", show: "Severance" },
+  { label: "Bingeable crime", show: "Breaking Bad" },
+  { label: "Big feelings", show: "The Bear" },
+  { label: "Prestige drama", show: "Succession" },
+  { label: "Comfort comedy", show: "The Office" },
+  { label: "Post-apocalyptic", show: "The Last of Us" },
+];
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -163,6 +171,18 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
             {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
             <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
           </button>)}
+        </div>
+      </section>}
+      {!hits.length && suggestions.length > 0 && <section className="suggested" aria-labelledby="moods-title">
+        <h2 id="moods-title">Browse by mood</h2>
+        <div className="mood-rail">
+          {MOODS.map((mood) => {
+            const show = suggestions.find((candidate) => candidate.name.toLocaleLowerCase() === mood.show.toLocaleLowerCase());
+            return show && <button key={mood.label} className="mood" onClick={() => { void pick(show); }}>
+              {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
+              <span><b>{mood.label}</b><small>{show.name}</small></span>
+            </button>;
+          })}
         </div>
       </section>}
       <ul className="hits">
