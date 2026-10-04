@@ -2,7 +2,7 @@
 
 Ask questions about a TV show without spoilers. You pick the last episode you watched; an AI agent answers using only summaries of episodes up to that point.
 
-Fully static frontend (Vite + React + TypeScript). No backend, no server costs: each user brings their own Anthropic API key, which stays in their browser.
+Fully static frontend (Vite + React + TypeScript). No backend, no server costs: each user brings an Anthropic, OpenAI, or Google Gemini API key, which stays in their browser.
 
 ## Run it
 
@@ -25,7 +25,7 @@ Wikipedia ─► plot summaries ({{Episode list}} templates)
                      │                       past the viewer's position
               agent tools (list / get / search seen episodes)
                      │
-              Claude agent loop (tool use)  ──►  answer
+              Claude, GPT, or Gemini agent loop (tool use)  ──►  answer
                      │
               guard model: is the answer grounded in what the agent read?
                      │

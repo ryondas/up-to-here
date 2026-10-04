@@ -1,25 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type Anthropic from "@anthropic-ai/sdk";
 import { searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
-import { ask, makeClient, type Turn } from "./agent/agent";
+import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
 
 interface ChatMsg extends Turn { safe?: boolean; revealed?: boolean; sources?: string[]; }
 const KEY_STORE = "uth-api-key";
+const PROVIDER_STORE = "uth-api-provider";
 
 export default function App() {
   const [apiKey, setApiKey] = useState<string>(() => { try { return localStorage.getItem(KEY_STORE) ?? ""; } catch { return ""; } });
-  const client = useMemo<Anthropic | null>(() => (apiKey ? makeClient(apiKey) : null), [apiKey]);
+  const [provider, setProvider] = useState<Provider>(() => {
+    try {
+      const saved = localStorage.getItem(PROVIDER_STORE);
+      return saved === "openai" || saved === "gemini" ? saved : "anthropic";
+    } catch { return "anthropic"; }
+  });
+  const client = useMemo<AgentClient | null>(() => (apiKey ? makeClient(provider, apiKey) : null), [provider, apiKey]);
 
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
   const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
 
-  if (!client) return <KeyScreen onSave={setApiKey} />;
+  if (!client) return <KeyScreen initialProvider={provider} onSave={(nextProvider, key) => { setProvider(nextProvider); setApiKey(key); }} />;
   return (
     <main>
       <header className="top">
         <h1>Up to here</h1>
-        <button className="link" onClick={() => { try { localStorage.removeItem(KEY_STORE); } catch {} setApiKey(""); }}>Change API key</button>
+        <button className="link" onClick={() => { try { localStorage.removeItem(KEY_STORE); localStorage.removeItem(PROVIDER_STORE); } catch {} setApiKey(""); }}>Change API key</button>
       </header>
       {!catalog ? (
         <ShowSearch onPick={async (hit) => {
@@ -41,20 +47,27 @@ export default function App() {
   );
 }
 
-function KeyScreen({ onSave }: { onSave: (k: string) => void }) {
+function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onSave: (provider: Provider, key: string) => void }) {
   const [k, setK] = useState("");
+  const [provider, setProvider] = useState<Provider>(initialProvider);
   const [remember, setRemember] = useState(true);
   return (
     <main className="narrow">
       <h1>Up to here</h1>
       <p className="lede">Ask questions about a show without spoilers. It only reads summaries of episodes you've already watched.</p>
-      <label className="field" htmlFor="key">Your Anthropic API key</label>
-      <input id="key" type="password" value={k} onChange={(e) => setK(e.target.value)} placeholder="sk-ant-…" autoComplete="off" />
+      <label className="field" htmlFor="provider">AI provider</label>
+      <select id="provider" value={provider} onChange={(e) => setProvider(e.target.value as Provider)}>
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI (GPT)</option>
+        <option value="gemini">Google (Gemini)</option>
+      </select>
+      <label className="field" htmlFor="key">Your {provider === "anthropic" ? "Anthropic" : provider === "openai" ? "OpenAI" : "Google Gemini"} API key</label>
+      <input id="key" type="password" value={k} onChange={(e) => setK(e.target.value)} placeholder={provider === "anthropic" ? "sk-ant-…" : provider === "openai" ? "sk-…" : "AIza…"} autoComplete="off" />
       <label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Remember on this device</label>
-      <p className="hint">Your key stays in this browser and is sent only to Anthropic. Questions are billed to your API account. Get a key at console.anthropic.com.</p>
-      <button className="primary" disabled={!k.startsWith("sk-")} onClick={() => {
-        if (remember) { try { localStorage.setItem(KEY_STORE, k.trim()); } catch {} }
-        onSave(k.trim());
+      <p className="hint">Your key stays in this browser and is sent only to {provider === "anthropic" ? "Anthropic" : provider === "openai" ? "OpenAI" : "Google"}. Questions are billed to your API account. Get a key at {provider === "anthropic" ? "console.anthropic.com" : provider === "openai" ? "platform.openai.com" : "aistudio.google.com"}.</p>
+      <button className="primary" disabled={!k.trim()} onClick={() => {
+        if (remember) { try { localStorage.setItem(KEY_STORE, k.trim()); localStorage.setItem(PROVIDER_STORE, provider); } catch {} }
+        onSave(provider, k.trim());
       }}>Continue</button>
     </main>
   );
@@ -94,7 +107,9 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
 
 function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog; position: Position; onChange: (p: Position) => void }) {
   const count = catalog.episodeCount(position.season);
-  const seenTitle = catalog.seenSkeleton(position).find((e) => e.season === position.season && e.number === position.episode)?.title;
+  const seenEpisodes = catalog.seenSkeleton(position);
+  const seenTitle = seenEpisodes.find((e) => e.season === position.season && e.number === position.episode)?.title;
+  const thumbnails = new Map(seenEpisodes.filter((e) => e.season === position.season).map((e) => [e.number, e.image]));
   return (
     <section className="picker">
       <div className="track-head">
@@ -108,10 +123,14 @@ function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog;
       <div className="track" role="group" aria-label="Episodes">
         {Array.from({ length: count }, (_, i) => i + 1).map((n) => {
           const seen = n <= position.episode;
+          const thumbnail = thumbnails.get(n);
           return (
             <button key={n} className={`ep ${seen ? "seen" : "future"} ${n === position.episode ? "current" : ""}`}
               aria-pressed={n === position.episode} aria-label={seen ? `Episode ${n}` : `Episode ${n}, not watched yet`}
-              onClick={() => onChange({ season: position.season, episode: n })}>{n}</button>
+              onClick={() => onChange({ season: position.season, episode: n })}>
+              {seen && thumbnail && <img src={thumbnail} alt="" />}
+              <span>{n}</span>
+            </button>
           );
         })}
       </div>
@@ -120,7 +139,7 @@ function PositionPicker({ catalog, position, onChange }: { catalog: ShowCatalog;
   );
 }
 
-function Chat({ client, catalog, position }: { client: Anthropic; catalog: ShowCatalog; position: Position }) {
+function Chat({ client, catalog, position }: { client: AgentClient; catalog: ShowCatalog; position: Position }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
