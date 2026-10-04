@@ -1,21 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
+import { getCast, getTrendingShows, resolveShowsByTitle, searchShows, type CastMember, type ShowHit, type TrendingShow } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn, type TurnUsage } from "./agent/agent";
 import { PRICING } from "./agent/config";
 import { friendlyError } from "./lib/errors";
 import {
-  clearCredentials, clearShowData, exportData, getChat, getLibrary, getProgress, getRecentShows, getSuggestedCache, importData, loadCredentials, saveChat, saveCredentials, saveLibraryEntry, saveProgress, saveRecentShow, saveSuggestedCache,
+  clearCredentials, clearShowData, exportData, getChat, getLibrary, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveLibraryEntry, saveProgress, saveRecentShow,
   type Credentials, type LibraryEntry, type StoredChatMessage,
 } from "./lib/storage";
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
-const MOODS = [
-  { label: "Tense & twisty", shows: ["Severance", "Yellowjackets"] },
-  { label: "Bingeable crime", shows: ["Breaking Bad", "Better Call Saul"] },
+
+/**
+ * Moods either match shows dynamically by TVmaze genre tag (from the trending pool),
+ * or — when a mood doesn't map cleanly onto TVmaze's genre vocabulary — stay curated
+ * to a fixed show list. See docs/sprint-5-plans.md for why each mood landed where it did.
+ */
+const MOODS: Array<{ label: string; genres: string[]; minRating?: number } | { label: string; shows: string[] }> = [
+  { label: "Tense & twisty", genres: ["Mystery", "Supernatural", "Science-Fiction"] },
+  { label: "Bingeable crime", genres: ["Crime"] },
   { label: "Big feelings", shows: ["The Bear", "Fleabag"] },
-  { label: "Prestige drama", shows: ["Succession", "The Sopranos"] },
-  { label: "Comfort comedy", shows: ["The Office", "Parks and Recreation", "The Good Place"] },
+  { label: "Prestige drama", genres: ["Drama"], minRating: 8.5 },
+  { label: "Comfort comedy", genres: ["Comedy"] },
   { label: "Post-apocalyptic", shows: ["The Last of Us", "Yellowjackets"] },
 ];
 const TRENDING_CHARACTERS = [
@@ -42,6 +48,7 @@ const shuffle = <T,>(items: T[]) => {
   }
   return next;
 };
+const pickRandom = <T,>(items: T[]): T | undefined => items[Math.floor(Math.random() * items.length)];
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -53,6 +60,7 @@ export default function App() {
   const [storageNotice, setStorageNotice] = useState("");
   const [usage, setUsage] = useState({ agentIn: 0, agentOut: 0, guardIn: 0, guardOut: 0 });
   const [view, setView] = useState<"main" | "apiKey">("main");
+  const [pendingQuestion, setPendingQuestion] = useState("");
   const importRef = useRef<HTMLInputElement | null>(null);
   const addUsage = (u: TurnUsage) => setUsage((prev) => ({
     agentIn: prev.agentIn + u.agent.input, agentOut: prev.agentOut + u.agent.output,
@@ -104,13 +112,14 @@ export default function App() {
         <ApiKeyTab provider={client.provider} apiKey={credentials?.apiKey ?? ""} usage={usage}
           onChangeKey={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }} />
       ) : !catalog ? (
-        <ShowSearch onPick={async (hit) => {
+        <ShowSearch onPick={async (hit, openingQuestion) => {
           const c = await new ShowCatalog(hit.id, hit.name, hit.image).load();
           const saved = await getProgress(c.showId).catch(() => undefined);
           const season = saved && c.seasons.includes(saved.season) ? saved.season : c.seasons[0] ?? 1;
           const episode = saved && saved.season === season && saved.episode <= c.episodeCount(season) ? saved.episode : 1;
           setPosition({ season, episode });
           setCatalog(c);
+          setPendingQuestion(openingQuestion ?? "");
         }} />
       ) : (
         <>
@@ -126,7 +135,8 @@ export default function App() {
             </div>
           </div>
           <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
-          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} onUsage={addUsage} />
+          <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} onUsage={addUsage}
+            initialQuestion={pendingQuestion} onConsumeInitialQuestion={() => setPendingQuestion("")} />
         </>
       )}
     </main>
@@ -192,38 +202,63 @@ function KeyScreen({ initialProvider, onSave }: { initialProvider: Provider; onS
   );
 }
 
-function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
+function ShowSearch({ onPick }: { onPick: (h: ShowHit, openingQuestion?: string) => Promise<void> }) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ShowHit[]>([]);
-  const [suggestions, setSuggestions] = useState<ShowHit[]>([]);
+  const [suggestions, setSuggestions] = useState<TrendingShow[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<ShowHit[]>([]);
   const [library, setLibrary] = useState<LibraryEntry[]>([]);
+  const [curatedShows, setCuratedShows] = useState<Map<string, ShowHit>>(new Map());
+  const [characterImages, setCharacterImages] = useState<Map<string, string>>(new Map());
   useEffect(() => { getRecentShows().then(setRecent).catch(() => undefined); }, []);
   useEffect(() => { getLibrary().then(setLibrary).catch(() => undefined); }, []);
   useEffect(() => {
     let active = true;
-    // Show cached suggestions instantly if we have them, then quietly refresh from the network.
-    getSuggestedCache().then((cached) => {
-      if (active && cached?.length) { setSuggestions(cached); setLoadingSuggestions(false); }
-    }).catch(() => undefined);
-    getSuggestedShows().then((shows) => {
-      if (active) setSuggestions(shows);
-      void saveSuggestedCache(shows).catch(() => undefined);
-    }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
+    getTrendingShows().then((shows) => { if (active) setSuggestions(shows); }).catch(() => undefined).finally(() => { if (active) setLoadingSuggestions(false); });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    // Moods/characters that need a specific named show (not whatever's trending this week) resolve separately.
+    const titles = [...new Set([
+      ...MOODS.flatMap((mood) => "shows" in mood ? mood.shows : []),
+      ...TRENDING_CHARACTERS.map((character) => character.show),
+    ])];
+    resolveShowsByTitle(titles).then((map) => { if (active) setCuratedShows(map); }).catch(() => undefined);
     return () => { active = false; };
   }, []);
   const suggested = useMemo(() => suggestions.slice(0, 6), [suggestions]);
-  const moodCards = useMemo(() => shuffle(MOODS).map((mood) => ({
-    mood,
-    show: suggestions.find((candidate) => mood.shows.includes(candidate.name)),
-  })).filter((card): card is { mood: typeof MOODS[number]; show: ShowHit } => Boolean(card.show)).slice(0, 6), [suggestions]);
+  const moodCards = useMemo(() => shuffle(MOODS).map((mood) => {
+    if ("shows" in mood) {
+      const show = mood.shows.map((title) => curatedShows.get(title)).find((s): s is ShowHit => Boolean(s));
+      return show ? { label: mood.label, show } : null;
+    }
+    const pool = suggestions.filter((s) => s.genres.some((g) => mood.genres.includes(g)) && (mood.minRating === undefined || (s.rating ?? 0) >= mood.minRating));
+    const show = pickRandom(pool);
+    return show ? { label: mood.label, show } : null;
+  }).filter((card): card is { label: string; show: ShowHit } => Boolean(card)).slice(0, 6), [suggestions, curatedShows]);
   const characterCards = useMemo(() => shuffle(TRENDING_CHARACTERS).map((character) => ({
     character,
-    show: suggestions.find((candidate) => candidate.name === character.show),
-  })).filter((card): card is { character: typeof TRENDING_CHARACTERS[number]; show: ShowHit } => Boolean(card.show)).slice(0, 6), [suggestions]);
+    show: curatedShows.get(character.show),
+  })).filter((card): card is { character: typeof TRENDING_CHARACTERS[number]; show: ShowHit } => Boolean(card.show)).slice(0, 6), [curatedShows]);
+  useEffect(() => {
+    let active = true;
+    const showIds = [...new Set(characterCards.map((c) => c.show.id))];
+    Promise.all(showIds.map(async (id) => [id, await getCast(id).catch((): CastMember[] => [])] as const)).then((pairs) => {
+      if (!active) return;
+      const castByShow = new Map(pairs);
+      const images = new Map<string, string>();
+      characterCards.forEach(({ character, show }) => {
+        const match = castByShow.get(show.id)?.find((c) => c.character.toLowerCase() === character.name.toLowerCase());
+        if (match?.image) images.set(character.name, match.image);
+      });
+      setCharacterImages(images);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [characterCards]);
   const go = async (query = q) => {
     if (!query.trim()) return;
     setBusy("Searching…"); setErr("");
@@ -233,11 +268,11 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
       if (results[0]) setRecent(await saveRecentShow(results[0]));
     } catch (e) { setErr(friendlyError(e, "shows")); } finally { setBusy(""); }
   };
-  const pick = async (show: ShowHit) => {
+  const pick = async (show: ShowHit, openingQuestion?: string) => {
     setBusy(`Loading ${show.name}…`);
     try {
       setRecent(await saveRecentShow(show));
-      await onPick(show);
+      await onPick(show, openingQuestion);
     } catch (e) { setErr(friendlyError(e, "shows")); setBusy(""); }
   };
   return (
@@ -247,6 +282,9 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
         <input id="sq" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} placeholder="Show name" />
         <button className="primary" onClick={() => { void go(); }}>Search</button>
       </div>
+      {recent.length > 0 && <div className="recent-pills" aria-label="Recent searches">
+        {recent.map((show) => <button key={show.id} className="pill" onClick={() => { void pick(show); }}>{show.name}</button>)}
+      </div>}
       <p className="status">{busy || err}</p>
       {!hits.length && library.length > 0 && <section className="suggested" aria-labelledby="continue-title">
         <h2 id="continue-title">Continue watching</h2>
@@ -266,29 +304,20 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
           </button>)}
         </div>}
       </section>}
-      {!hits.length && recent.length > 0 && <section className="suggested" aria-labelledby="recent-title">
-        <h2 id="recent-title">Recent searches</h2>
-        <div className="suggestion-rail">
-          {recent.map((show) => <button key={show.id} className="suggestion" onClick={() => { void pick(show); }}>
-            {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
-            <span><b>{show.name}</b>{show.network && <small>{show.network}</small>}</span>
-          </button>)}
-        </div>
-      </section>}
       {!hits.length && moodCards.length > 0 && <section className="suggested" aria-labelledby="moods-title">
         <h2 id="moods-title">Browse by mood</h2>
         <div className="mood-rail">
-          {moodCards.map(({ mood, show }) => <button key={mood.label} className="mood" onClick={() => { void pick(show); }}>
+          {moodCards.map(({ label, show }) => <button key={label} className="mood" onClick={() => { void pick(show); }}>
               {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
-              <span><b>{mood.label}</b><small>{show.name}</small></span>
+              <span><b>{label}</b><small>{show.name}</small></span>
             </button>)}
         </div>
       </section>}
       {!hits.length && characterCards.length > 0 && <section className="suggested" aria-labelledby="characters-title">
         <h2 id="characters-title">Trending characters</h2>
         <div className="character-rail">
-          {characterCards.map(({ character, show }) => <button key={character.name} className="character" onClick={() => { void pick(show); }}>
-              {show.image ? <img src={show.image} alt="" /> : <span className="noart" />}
+          {characterCards.map(({ character, show }) => <button key={character.name} className="character" onClick={() => { void pick(show, `Tell me about ${character.name}`); }}>
+              {characterImages.get(character.name) ?? show.image ? <img src={characterImages.get(character.name) ?? show.image} alt="" /> : <span className="noart" />}
               <span><b>{character.name}</b><small>{show.name}</small></span>
             </button>)}
         </div>
@@ -353,9 +382,12 @@ function buildQuickPrompts(current?: { title: string; summary: string }): string
   return [...specific, ...generic].slice(0, 4);
 }
 
-function Chat({ client, catalog, position, onUsage }: { client: AgentClient; catalog: ShowCatalog; position: Position; onUsage: (u: TurnUsage) => void }) {
+function Chat({ client, catalog, position, onUsage, initialQuestion, onConsumeInitialQuestion }: {
+  client: AgentClient; catalog: ShowCatalog; position: Position; onUsage: (u: TurnUsage) => void;
+  initialQuestion?: string; onConsumeInitialQuestion: () => void;
+}) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(() => initialQuestion ?? "");
   const [status, setStatus] = useState("");
   const [historyReady, setHistoryReady] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -374,6 +406,14 @@ function Chat({ client, catalog, position, onUsage }: { client: AgentClient; cat
   useEffect(() => {
     if (historyReady && msgs.length > 0) void saveChat(catalog.showId, position, msgs).catch(() => undefined);
   }, [catalog.showId, historyReady, msgs, position]);
+
+  useEffect(() => {
+    // Runs once per mount (this component remounts via `key` on every show/position change) —
+    // tells the parent its one-shot opening question has been consumed, so a later show opened
+    // without a fresh character click doesn't inherit it.
+    if (initialQuestion) onConsumeInitialQuestion();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let active = true;

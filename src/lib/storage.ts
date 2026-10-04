@@ -12,7 +12,7 @@ export interface StoredChatMessage {
 export interface LibraryEntry { show: ShowHit; position: StoredPosition; updatedAt: string; }
 
 const DB_NAME = "up-to-here";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const LEGACY_KEY = "uth-api-key";
 const LEGACY_PROVIDER = "uth-api-provider";
 
@@ -40,6 +40,7 @@ function openDb(): Promise<IDBDatabase> {
         if (!database.objectStoreNames.contains("library")) database.createObjectStore("library");
         if (!database.objectStoreNames.contains("episodeCache")) database.createObjectStore("episodeCache");
         if (!database.objectStoreNames.contains("suggestedCache")) database.createObjectStore("suggestedCache");
+        if (!database.objectStoreNames.contains("castCache")) database.createObjectStore("castCache");
       };
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);
@@ -66,7 +67,7 @@ async function remove(store: string, key: IDBValidKey) {
   await request(tx.objectStore(store).delete(key));
 }
 
-const STORES = ["settings", "progress", "chats", "recentSearches", "wikiCache", "library", "episodeCache", "suggestedCache"] as const;
+const STORES = ["settings", "progress", "chats", "recentSearches", "wikiCache", "library", "episodeCache", "suggestedCache", "castCache"] as const;
 type StoreName = typeof STORES[number];
 type BackupEntry = [IDBValidKey, unknown];
 export interface DataBackup {
@@ -160,6 +161,7 @@ export async function clearShowData(showId: number) {
   await remove("progress", showId);
   await remove("library", showId);
   await remove("episodeCache", showId);
+  await remove("castCache", showId);
   const database = await openDb();
   await clearPrefixed(database, "chats", `${showId}:`);
   await clearPrefixed(database, "wikiCache", `${showId}:`);
@@ -192,8 +194,25 @@ export async function getEpisodeCache(showId: number): Promise<TvEpisode[] | und
 export const saveEpisodeCache = (showId: number, episodes: TvEpisode[]) =>
   put("episodeCache", { episodes, cachedAt: new Date().toISOString() } satisfies EpisodeCacheEntry, showId);
 
-export const getSuggestedCache = () => get<ShowHit[]>("suggestedCache", "shows");
-export const saveSuggestedCache = (shows: ShowHit[]) => put("suggestedCache", shows, "shows");
+interface TrendingCacheEntry { shows: TrendingShow[]; cachedAt: string; }
+const TRENDING_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // shorter than the episode cache — this is meant to actually rotate
+export async function getTrendingCache(): Promise<TrendingShow[] | undefined> {
+  const entry = await get<TrendingCacheEntry>("suggestedCache", "shows");
+  if (!entry || Date.now() - new Date(entry.cachedAt).getTime() > TRENDING_CACHE_TTL_MS) return undefined;
+  return entry.shows;
+}
+export const saveTrendingCache = (shows: TrendingShow[]) =>
+  put("suggestedCache", { shows, cachedAt: new Date().toISOString() } satisfies TrendingCacheEntry, "shows");
 
-import type { ShowHit, TvEpisode } from "./tvmaze";
+const CAST_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+interface CastCacheEntry { cast: CastMember[]; cachedAt: string; }
+export async function getCastCache(showId: number): Promise<CastMember[] | undefined> {
+  const entry = await get<CastCacheEntry>("castCache", showId);
+  if (!entry || Date.now() - new Date(entry.cachedAt).getTime() > CAST_CACHE_TTL_MS) return undefined;
+  return entry.cast;
+}
+export const saveCastCache = (showId: number, cast: CastMember[]) =>
+  put("castCache", { cast, cachedAt: new Date().toISOString() } satisfies CastCacheEntry, showId);
+
+import type { CastMember, ShowHit, TrendingShow, TvEpisode } from "./tvmaze";
 import type { SeasonSource } from "./wikipedia";
