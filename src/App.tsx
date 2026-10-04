@@ -8,6 +8,7 @@ import {
 } from "./lib/storage";
 
 interface ChatMsg extends Turn, StoredChatMessage { safe?: boolean; revealed?: boolean; sources?: string[]; }
+const QUICK_PROMPTS = ["What just happened?", "Who is this again?", "Why is everyone upset?", "What should I remember?"];
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -237,6 +238,9 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
         </div>
       ))}
       {(status || !historyReady) && <p className="status">{status || "Loading saved chat…"} {status && <button className="link" onClick={() => ctl.current?.abort()}>Stop</button>}</p>}
+      <div className="quick-prompts" aria-label="Quick prompts">
+        {QUICK_PROMPTS.map((prompt) => <button key={prompt} onClick={() => setQ(prompt)}>{prompt}</button>)}
+      </div>
       <div className="row ask">
         <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Who is this guy again? Why is she so angry?" aria-label="Your question" />

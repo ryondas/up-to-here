@@ -57,5 +57,8 @@ select{width:auto;padding:.3rem .5rem}
 .flag-msg button{display:block;margin-top:.5rem;font:inherit;background:none;border:1.5px solid var(--warn);color:var(--warn);border-radius:8px;padding:.25rem .7rem;cursor:pointer}
 .src{display:block;margin-top:.5rem;color:var(--muted);font-family:"Bricolage Grotesque",system-ui,sans-serif;font-size:.8rem}
 .ask{margin-top:1rem}
+.quick-prompts{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:1rem}
+.quick-prompts button{border:1.5px solid var(--line);border-radius:999px;background:var(--surface);color:var(--ink);padding:.35rem .65rem;cursor:pointer;font:inherit;font-size:.85rem}
+.quick-prompts button:hover{border-color:var(--play)}
 .attrib{font-size:.8rem;margin-top:2rem}
 .attrib a{color:inherit}
