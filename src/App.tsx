@@ -3,7 +3,7 @@ import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
 import {
-  clearCredentials, getChat, getProgress, getRecentShows, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
+  clearCredentials, exportData, getChat, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
   type Credentials, type StoredChatMessage,
 } from "./lib/storage";
 
@@ -17,6 +17,8 @@ export default function App() {
 
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
   const [position, setPosition] = useState<Position>({ season: 1, episode: 1 });
+  const [storageNotice, setStorageNotice] = useState("");
+  const importRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     loadCredentials().then(setCredentials).catch(() => undefined).finally(() => setStorageReady(true));
@@ -37,8 +39,26 @@ export default function App() {
     <main>
       <header className="top">
         <h1>Up to here</h1>
-        <button className="link" onClick={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }}>Change API key</button>
+        <div className="header-actions">
+          <button className="link" onClick={() => { void exportData().then((backup) => {
+            const href = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+            const download = document.createElement("a");
+            download.href = href; download.download = "up-to-here-backup.json"; download.click(); URL.revokeObjectURL(href);
+            setStorageNotice("Data exported.");
+          }).catch(() => setStorageNotice("Couldn’t export your local data.")); }}>Export data</button>
+          <button className="link" onClick={() => importRef.current?.click()}>Import data</button>
+          <input ref={importRef} className="visually-hidden" type="file" accept="application/json" onChange={(event) => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = "";
+            if (!file) return;
+            void file.text().then(JSON.parse).then(importData).then(() => window.location.reload()).catch((error: unknown) => {
+              setStorageNotice(error instanceof Error ? error.message : "Couldn’t import that file.");
+            });
+          }} />
+          <button className="link" onClick={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }}>Change API key</button>
+        </div>
       </header>
+      {storageNotice && <p className="status">{storageNotice}</p>}
       {!catalog ? (
         <ShowSearch onPick={async (hit) => {
           const c = await new ShowCatalog(hit.id, hit.name).load();
