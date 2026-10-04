@@ -43,6 +43,11 @@ select{width:auto;padding:.3rem .5rem}
 .settings-data .row{flex-wrap:wrap}
 .settings-data .status:empty{display:none}
 .settings-data + .api-key-tab{margin-top:1.75rem}
+.key-links{display:flex;flex-wrap:wrap;gap:.4rem 1rem}
+.key-actions{align-items:center;gap:1rem;margin-top:1rem}
+.free-note{margin:.6rem 0 0;font-size:.85rem;color:var(--muted)}
+.free-limit{margin-top:1rem;padding:1rem 1.2rem;border-radius:14px;background:var(--surface);border:1.5px solid var(--play)}
+.free-limit p{margin:0 0 .75rem}
 .hits{list-style:none;padding:0;margin:0;display:grid;gap:.5rem}
 .hits button{display:flex;gap:.8rem;align-items:center;width:100%;text-align:left;background:var(--surface);border:1.5px solid var(--line);border-radius:10px;padding:.5rem;cursor:pointer;color:var(--ink);font:inherit}
 .hits img,.hits .noimg{width:42px;height:59px;object-fit:cover;border-radius:4px;background:var(--line);flex:none}

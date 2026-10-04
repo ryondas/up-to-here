@@ -8,7 +8,7 @@
 
 **Ask questions about a TV show without spoilers.** You pick the last episode you watched; an AI agent answers using only summaries of episodes up to that point — nothing later ever reaches the model, the UI, or you.
 
-Fully static frontend (Vite + React + TypeScript). No backend, no server costs: each user brings their own Anthropic, OpenAI, or Google Gemini API key, which stays in their browser and is sent straight to that provider.
+A static frontend (Vite + React + TypeScript) plus one small Vercel function. New visitors get 10 free questions a day on the site's Gemini key, which stays on the server. After that, they add their own Anthropic, OpenAI, or Google Gemini API key, which stays in their browser and is sent straight to that provider.
 
 ## Contents
 
@@ -27,7 +27,8 @@ Fully static frontend (Vite + React + TypeScript). No backend, no server costs: 
 ## Features
 
 - **Three-layer spoiler defense** — a code gate that structurally refuses future episodes, a system prompt telling the model to ignore its own training knowledge, and a second cheap model that re-checks every answer against only the evidence retrieved, failing closed.
-- **Bring your own key** — Anthropic, OpenAI, or Google Gemini. Billed to your own account; no key ever touches a server, because there isn't one.
+- **Free to start** — 10 free questions a day with no setup, answered through `/api/gemini` with the site's key. Limits are enforced on the server per visitor, per network, and site-wide.
+- **Bring your own key** — Anthropic, OpenAI, or Google Gemini, for unlimited use billed to your own account. Your key never touches the site's server; it's sent straight from your browser to the provider.
 - **Plot summaries from Wikipedia, with a Fandom fallback** and a manual page-override when the title-matching heuristic guesses wrong.
 - **Resilient by default** — transient network/API failures retry with backoff; episode lists, season summaries, cast data, and trending shows all persist in IndexedDB so repeat visits don't re-fetch or re-parse.
 - **Session cost tracking** — the Settings page shows your current provider/key and a running token/cost estimate for the session; every chat answer also shows its own token count.
@@ -42,7 +43,13 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-You'll need an API key from whichever provider you choose:
+The free tier needs the site's own Gemini key. For local dev, put it in `.env.local` (gitignored):
+
+```bash
+GEMINI_API_KEY=AIza...
+```
+
+Locally, free-tier counts are kept in memory and reset when the dev server restarts. Without `GEMINI_API_KEY` the free tier is off, and you can still add your own key in the app. To use your own key, get one from whichever provider you choose:
 
 | Provider | Get a key at |
 |---|---|
@@ -98,18 +105,19 @@ Moving your position backward clears the chat, since earlier answers may cover e
 | `src/agent/guard.ts` | Spoiler check |
 | `src/agent/config.ts` | Model choices + approximate pricing |
 | `src/lib/route.ts` | Hash routes (`#/`, `#/show/:id?s=&e=`, `#/settings`, `#/profiles`) so Back, refresh and links work |
-| `src/App.tsx` | App shell: key gate, routes between search, a show, settings and profiles |
+| `api/gemini.ts` | Vercel Function for the free tier: holds the site's Gemini key and enforces daily limits |
+| `src/App.tsx` | App shell: routes between search, a show, settings, profiles and the key screen |
 | `src/components/` | Header and breadcrumb, settings (data backup, API key, usage), key screen, profiles, show search/discovery, episode track, chat |
 
 ## Testing
 
 ```bash
-npm test         # spoiler-gate tests (network mocked) + route tests
+npm test         # spoiler-gate, route, and free-tier tests (network mocked)
 npm run lint      # oxlint
 npm run build     # type-checks, then builds the static site to dist/
 ```
 
-The test suite mocks the network and asserts the gate end-to-end: a tool call for a future episode is refused, search results never include future-episode content, and nothing from a future season is ever retrieved.
+The test suite mocks the network and asserts the gate end-to-end: a tool call for a future episode is refused, search results never include future-episode content, and nothing from a future season is ever retrieved. The free-tier tests cover the daily limits and check that the site's key never appears in a response.
 
 ## Deploying
 
@@ -117,7 +125,15 @@ The test suite mocks the network and asserts the gate end-to-end: a tool call fo
 npm run build    # static site in dist/
 ```
 
-Deploy `dist/` anywhere static: Vercel, Netlify, Cloudflare Pages, GitHub Pages. There's nothing to configure server-side — the app is just files.
+The site is built for Vercel: `dist/` is the static app and `api/gemini.ts` deploys as a Vercel Function. Set these in the Vercel project's environment variables:
+
+| Variable | What it's for |
+|---|---|
+| `GEMINI_API_KEY` | The site's Gemini key for the free tier. Server-only; never sent to the browser. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Free-tier counters. Connecting Upstash Redis from Vercel's Marketplace sets these (as `KV_REST_API_URL` / `KV_REST_API_TOKEN`, which also work). |
+| `FREE_SITE_QUESTIONS_PER_DAY` | Optional. Site-wide daily cap on free questions (default 120), to stay inside your Gemini key's quota. |
+
+If the key or Redis is missing, the free tier switches off and visitors are asked for their own key. On other static hosts the app still works, but only with users' own keys.
 
 Link previews need an absolute `og:image` URL, built from `VITE_SITE_URL` in `.env` (`https://up-to-here.vercel.app`). If you deploy somewhere else, change it there or set a `VITE_SITE_URL` build variable on your host.
 
@@ -126,17 +142,18 @@ Link previews need an absolute `og:image` URL, built from `VITE_SITE_URL` in `.e
 - **Wikipedia/Fandom page matching is heuristic.** It tries a few title patterns, then a search, then falls back. Shows with disambiguated titles (e.g. *The Office (American TV series)*) may miss — use the "Wrong page? / Missing summaries?" link under a show's chat to point it at the right page manually.
 - **Summaries are short.** Wikipedia's are a paragraph; enough for "who is this", thin for "explain this scene." Richer sources (fan wiki episode pages, subtitles) bring licensing questions.
 - **Mid-episode position** isn't supported; the unit is whole episodes.
-- **API keys in the browser.** Fine for BYOK, but if you later want users to sign in instead of pasting a key, you'll need a backend that holds your key and handles billing — which is a different app than this one.
+- **API keys in the browser.** Fine for BYOK. Users' own keys are stored in their browser, so create a dedicated key with a spend limit.
+- **Free-tier limits are per visitor, not per person.** Visitors are identified by an anonymous cookie and capped per IP, so someone clearing cookies gets a few more questions until their network's cap is hit. The site-wide cap bounds the total. Free questions pass through the site's server to Google; if your Gemini key is on Google's free tier, Google may use that traffic to improve its products.
 - **"Trending" is a proxy, not real popularity.** TVmaze has no popularity endpoint, so discovery is driven by what was most recently updated in their database. It's a reasonable free, keyless signal, not a ground truth.
 
 ## Contributing
 
 Issues and PRs are welcome. A few things worth knowing before you dive in:
 
-- There's no backend and no plan to add one — keep contributions client-only.
+- The only server code is `api/gemini.ts`, the free-tier proxy. Keep everything else client-only.
 - Every new tool the agent can call must go through `ShowCatalog.getEpisode` (or an equivalent gate check) before returning anything. The spoiler gate is a hard architectural rule, not a style preference.
 - Run `npm test && npm run lint && npm run build` before opening a PR.
-- If you add a dependency on a new external API, confirm it's free, keyless (or BYOK), and CORS-enabled from the browser — this app has no server to proxy requests through.
+- If you add a dependency on a new external API, confirm it's free, keyless (or BYOK), and CORS-enabled from the browser — the free-tier proxy is the only server code, and it isn't a general proxy.
 
 ## License
 

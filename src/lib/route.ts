@@ -7,6 +7,7 @@ export type Route =
   | { name: "search" }
   | { name: "settings" }
   | { name: "profiles" }
+  | { name: "key" }
   | { name: "show"; showId: number; position?: Position };
 
 const positiveInt = (value: string | null | undefined) => {
@@ -19,6 +20,7 @@ export function parseRoute(hash: string): Route {
   const [path, query = ""] = hash.replace(/^#/, "").split("?");
   if (/^\/settings\/?$/.test(path)) return { name: "settings" };
   if (/^\/profiles\/?$/.test(path)) return { name: "profiles" };
+  if (/^\/key\/?$/.test(path)) return { name: "key" };
   const match = /^\/show\/([^/]+)\/?$/.exec(path);
   const showId = positiveInt(match?.[1]);
   if (!showId) return { name: "search" };
@@ -32,6 +34,7 @@ export function routeHash(route: Route): string {
   if (route.name === "search") return "#/";
   if (route.name === "settings") return "#/settings";
   if (route.name === "profiles") return "#/profiles";
+  if (route.name === "key") return "#/key";
   const position = route.position ? `?s=${route.position.season}&e=${route.position.episode}` : "";
   return `#/show/${route.showId}${position}`;
 }

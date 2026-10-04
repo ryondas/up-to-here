@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ShowCatalog, type Position } from "./lib/catalog";
-import { makeClient, type AgentClient, type TurnUsage } from "./agent/agent";
+import { makeClient, makeFreeClient, type AgentClient, type TurnUsage } from "./agent/agent";
 import { friendlyError } from "./lib/errors";
 import { useRoute } from "./lib/route";
 import { getShow } from "./lib/tvmaze";
@@ -32,7 +32,10 @@ const isValidPosition = (c: ShowCatalog, p: Position) =>
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
   const [storageReady, setStorageReady] = useState(false);
-  const client = useMemo<AgentClient | null>(() => credentials?.apiKey ? makeClient(credentials.provider, credentials.apiKey) : null, [credentials]);
+  // No saved key means the free tier, so new visitors can start asking straight away.
+  const client = useMemo<AgentClient>(() => credentials?.apiKey ? makeClient(credentials.provider, credentials.apiKey) : makeFreeClient(), [credentials]);
+  const [freeRemaining, setFreeRemaining] = useState<number | null>(null);
+  const [keyReturnsBack, setKeyReturnsBack] = useState(false);
 
   const [route, navigate] = useRoute();
   const [catalog, setCatalog] = useState<ShowCatalog | null>(null);
@@ -42,6 +45,12 @@ export default function App() {
   const [profiles] = useState<Profile[]>(() => listProfiles());
   const activeProfileId = useMemo(() => getActiveProfileId(), []);
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
+  const openKeyScreen = () => { setKeyReturnsBack(true); navigate({ name: "key" }); };
+  // Back to wherever the key screen was opened from; a direct visit to #/key goes home instead.
+  const leaveKeyScreen = () => {
+    if (keyReturnsBack) { setKeyReturnsBack(false); window.history.back(); }
+    else navigate({ name: "search" }, { replace: true });
+  };
   const addUsage = (u: TurnUsage) => setUsage((prev) => ({
     agentIn: prev.agentIn + u.agent.input, agentOut: prev.agentOut + u.agent.output,
     guardIn: prev.guardIn + u.guard.input, guardOut: prev.guardOut + u.guard.output,
@@ -59,13 +68,13 @@ export default function App() {
 
   // Opened from a link or a refresh: load the show named in the URL.
   useEffect(() => {
-    if (!client || routeShowId === null || catalog?.showId === routeShowId) return;
+    if (routeShowId === null || catalog?.showId === routeShowId) return;
     let active = true;
     getShow(routeShowId).then((hit) => new ShowCatalog(hit.id, hit.name, hit.image).load())
       .then((c) => { if (active) setCatalog(c); })
       .catch((e) => { if (active) setLoadFailure({ showId: routeShowId, message: friendlyError(e, "shows") }); });
     return () => { active = false; };
-  }, [client, routeShowId, catalog]);
+  }, [routeShowId, catalog]);
   // No usable position in the URL: fill in saved progress without adding a Back step.
   useEffect(() => {
     if (!showCatalog || position) return;
@@ -84,20 +93,23 @@ export default function App() {
 
   if (!storageReady) return <main className="narrow"><p className="status">Loading saved data…</p></main>;
   if (route.name === "profiles") return <ProfilesTab profiles={profiles} activeProfileId={activeProfileId} onBack={() => navigate({ name: "search" })} />;
-  if (!client) return <KeyScreen initialProvider={credentials?.provider ?? "anthropic"} profileName={activeProfile.name}
+  if (route.name === "key") return <KeyScreen initialProvider={credentials?.provider ?? "gemini"} profileName={activeProfile.name}
     onSwitchProfile={() => navigate({ name: "profiles" })}
+    onCancel={leaveKeyScreen}
     onSave={async (nextProvider, key, remember) => {
       const next = { provider: nextProvider, apiKey: key };
       if (remember) await saveCredentials(next).catch(() => undefined);
       else await clearCredentials().catch(() => undefined);
       setCredentials(next);
+      leaveKeyScreen();
     }} />;
   return (
     <main>
       <AppHeader route={route} profileName={activeProfile.name} showName={showCatalog?.showName} position={position} />
       {route.name === "settings" ? (
         <Settings profileName={activeProfile.name} provider={client.provider} apiKey={credentials?.apiKey ?? ""} usage={usage}
-          onChangeKey={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }} />
+          freeRemaining={freeRemaining} onChangeKey={openKeyScreen}
+          onRemoveKey={() => { void clearCredentials().catch(() => undefined); setCredentials(null); }} />
       ) : route.name === "search" ? (
         <ShowSearch onPick={async (hit, openingQuestion) => {
           const c = await new ShowCatalog(hit.id, hit.name, hit.image).load();
@@ -127,7 +139,8 @@ export default function App() {
           <PositionPicker catalog={showCatalog} position={position}
             onChange={(p) => navigate({ name: "show", showId: showCatalog.showId, position: p }, { replace: true })} />
           <Chat key={`${showCatalog.showId}:${position.season}:${position.episode}`} client={client} catalog={showCatalog} position={position} onUsage={addUsage}
-            initialQuestion={pendingQuestion} onConsumeInitialQuestion={() => setPendingQuestion("")} />
+            initialQuestion={pendingQuestion} onConsumeInitialQuestion={() => setPendingQuestion("")}
+            freeRemaining={freeRemaining} onFreeRemaining={setFreeRemaining} onAddKey={openKeyScreen} />
         </>
       )}
     </main>
