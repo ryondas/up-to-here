@@ -11,7 +11,8 @@ export const MODELS: Record<Provider, { agent: string; guard: string }> = {
     guard: "gpt-4.1-mini",
   },
   gemini: {
-    agent: "gemini-3.8-flash",
-    guard: "gemini-3.5-flash-lite",
+    // Free-tier, function-calling model designed for high-volume agentic work.
+    agent: "gemini-3.1-flash-lite",
+    guard: "gemini-3.1-flash-lite",
   },
 };
