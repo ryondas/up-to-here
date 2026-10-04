@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
+import { friendlyError } from "./lib/errors";
 import {
   clearCredentials, clearShowData, exportData, getChat, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
   type Credentials, type StoredChatMessage,
@@ -129,14 +130,14 @@ function ShowSearch({ onPick }: { onPick: (h: ShowHit) => Promise<void> }) {
       const results = await searchShows(query);
       setHits(results);
       if (results[0]) setRecent(await saveRecentShow(results[0]));
-    } catch (e) { setErr((e as Error).message); } finally { setBusy(""); }
+    } catch (e) { setErr(friendlyError(e, "shows")); } finally { setBusy(""); }
   };
   const pick = async (show: ShowHit) => {
     setBusy(`Loading ${show.name}…`);
     try {
       setRecent(await saveRecentShow(show));
       await onPick(show);
-    } catch (e) { setErr((e as Error).message); setBusy(""); }
+    } catch (e) { setErr(friendlyError(e, "shows")); setBusy(""); }
   };
   return (
     <section>
@@ -242,7 +243,7 @@ function Chat({ client, catalog, position }: { client: AgentClient; catalog: Sho
       const r = await ask(client, catalog, position, history, question, setStatus, ctl.current.signal);
       setMsgs((m) => [...m, { role: "assistant", content: r.text, safe: r.safe, sources: r.sources }]);
     } catch (e) {
-      const msg = (e as Error).name === "AbortError" ? "Stopped." : `Something went wrong: ${(e as Error).message}`;
+      const msg = (e as Error).name === "AbortError" ? "Stopped." : friendlyError(e, "chat");
       setMsgs((m) => [...m, { role: "assistant", content: msg, safe: true }]);
     } finally { setStatus(""); }
   };
