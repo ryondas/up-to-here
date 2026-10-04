@@ -97,7 +97,8 @@ Moving your position backward clears the chat, since earlier answers may cover e
 | `src/agent/agent.ts` | Tool-use loop, system prompt, per-call token tracking |
 | `src/agent/guard.ts` | Spoiler check |
 | `src/agent/config.ts` | Model choices + approximate pricing |
-| `src/App.tsx` | Key screen, show search/discovery, episode track, chat, API Key tab |
+| `src/App.tsx` | App shell: key gate, header, switches between screens |
+| `src/components/` | Key screen, profiles, show search/discovery, episode track, chat, API Key tab |
 
 ## Testing
 
