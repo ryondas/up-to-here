@@ -3,7 +3,7 @@ import { getSuggestedShows, searchShows, type ShowHit } from "./lib/tvmaze";
 import { ShowCatalog, type Position } from "./lib/catalog";
 import { ask, makeClient, type AgentClient, type Provider, type Turn } from "./agent/agent";
 import {
-  clearCredentials, exportData, getChat, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
+  clearCredentials, clearShowData, exportData, getChat, getProgress, getRecentShows, importData, loadCredentials, saveChat, saveCredentials, saveProgress, saveRecentShow,
   type Credentials, type StoredChatMessage,
 } from "./lib/storage";
 
@@ -72,7 +72,10 @@ export default function App() {
         <>
           <div className="show-row">
             <h2>{catalog.showName}</h2>
-            <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
+            <div className="show-actions">
+              <button className="link" onClick={async () => { await clearShowData(catalog.showId).catch(() => undefined); setCatalog(null); }}>Clear this show</button>
+              <button className="link" onClick={() => setCatalog(null)}>Pick another show</button>
+            </div>
           </div>
           <PositionPicker catalog={catalog} position={position} onChange={setPosition} />
           <Chat key={`${catalog.showId}:${position.season}:${position.episode}`} client={client} catalog={catalog} position={position} />

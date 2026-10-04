@@ -129,6 +129,21 @@ export const getChat = (showId: number, position: StoredPosition) => get<StoredC
 export const saveChat = (showId: number, position: StoredPosition, messages: StoredChatMessage[]) =>
   put("chats", messages, chatKey(showId, position));
 
+export async function clearShowData(showId: number) {
+  await remove("progress", showId);
+  const database = await db;
+  const read = database.transaction("chats", "readonly");
+  const keys = await request(read.objectStore("chats").getAllKeys());
+  const tx = database.transaction("chats", "readwrite");
+  const chats = tx.objectStore("chats");
+  keys.filter((key): key is string => typeof key === "string" && key.startsWith(`${showId}:`)).forEach((key) => chats.delete(key));
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 export const getRecentShows = () => get<ShowHit[]>("recentSearches", "shows").then((shows) => Array.isArray(shows) ? shows : []);
 export async function saveRecentShow(show: ShowHit) {
   const shows = await getRecentShows();
